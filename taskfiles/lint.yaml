@@ -1,0 +1,166 @@
+version: "3"
+
+vars:
+  G_LINT_VENV_DIR: "{{.G_BUILD_DIR}}/lint-venv"
+  G_LINT_VENV_CHECKSUM_FILE: "{{.G_BUILD_DIR}}/lint#venv.md5"
+
+  # The nightly Rust toolchain used for formatting and linting. Set it to a dated nightly (e.g.,
+  # `nightly-2026-10-31`) to pin it if a nightly regression breaks linting.
+  G_RUST_NIGHTLY_TOOLCHAIN: "nightly"
+
+tasks:
+  check:
+    cmds:
+      - task: "check-rust"
+      - task: "toml-check"
+      - task: "yml-check"
+
+  fix:
+    cmds:
+      - task: "fix-rust"
+      - task: "toml-fix"
+      - task: "yml-fix"
+
+  yml:
+    aliases:
+      - "yml-check"
+      - "yml-fix"
+    deps: ["venv"]
+    cmds:
+      - |-
+        . "{{.G_LINT_VENV_DIR}}/bin/activate"
+        yamllint \
+          --config-file "tools/yscope-dev-utils/exports/lint-configs/.yamllint.yml" \
+          --strict \
+          .github/ \
+          taskfile.yaml \
+          taskfiles/
+
+  toml-check:
+    cmds:
+      - task: "toml-lint"
+      - task: "toml-format"
+        vars:
+          FLAGS: "--check"
+
+  toml-fix:
+    cmds:
+      - task: "toml-lint"
+      - task: "toml-format"
+
+  toml-lint:
+    internal: true
+    deps: ["venv"]
+    cmds:
+      - |-
+        . "{{.G_LINT_VENV_DIR}}/bin/activate"
+        tombi lint "{{.ROOT_DIR}}"
+
+  toml-format:
+    internal: true
+    deps: ["venv"]
+    vars:
+      FLAGS: "{{.FLAGS | default \"\"}}"
+    cmds:
+      - |-
+        . "{{.G_LINT_VENV_DIR}}/bin/activate"
+        tombi format {{.FLAGS}} "{{.ROOT_DIR}}"
+
+  check-rust:
+    cmds:
+      - task: "check-rust-format"
+      - task: "check-rust-static"
+
+  fix-rust:
+    cmds:
+      # `fix-rust-static` must come before `fix-rust-format` to ensure that any fixes made by the
+      # static analysis tool (Clippy) are also formatted.
+      - task: "fix-rust-static"
+      - task: "fix-rust-format"
+
+  check-rust-format:
+    cmds:
+      - task: "cargo-workspace-fmt"
+        vars:
+          CARGO_FMT_FLAGS: "--check"
+
+  fix-rust-format:
+    cmds:
+      - task: "cargo-workspace-fmt"
+        vars:
+          CARGO_FMT_FLAGS: ""
+
+  check-rust-static:
+    cmds:
+      - task: "cargo-workspace-clippy"
+        vars:
+          CARGO_CLIPPY_FLAGS: "-- -D warnings"
+
+  fix-rust-static:
+    cmds:
+      - task: "cargo-workspace-clippy"
+        vars:
+          CARGO_CLIPPY_FLAGS: "--fix --allow-dirty --allow-staged"
+
+  venv:
+    internal: true
+    vars:
+      CHECKSUM_FILE: "{{.G_LINT_VENV_CHECKSUM_FILE}}"
+      OUTPUT_DIR: "{{.G_LINT_VENV_DIR}}"
+    sources:
+      - "{{.ROOT_TASKFILE}}"
+      - "{{.TASKFILE}}"
+      - "requirements-dev.txt"
+    generates: ["{{.CHECKSUM_FILE}}"]
+    run: "once"
+    deps:
+      - ":init"
+      - task: ":utils:checksum:validate"
+        vars:
+          CHECKSUM_FILE: "{{.CHECKSUM_FILE}}"
+          INCLUDE_PATTERNS: ["{{.OUTPUT_DIR}}"]
+    cmds:
+      - task: ":utils:misc:create-venv"
+        vars:
+          LABEL: "lint"
+          OUTPUT_DIR: "{{.OUTPUT_DIR}}"
+          REQUIREMENTS_FILE: "{{.ROOT_DIR}}/requirements-dev.txt"
+      # This command must be last
+      - task: ":utils:checksum:compute"
+        vars:
+          CHECKSUM_FILE: "{{.CHECKSUM_FILE}}"
+          INCLUDE_PATTERNS: ["{{.OUTPUT_DIR}}"]
+
+  rust-lint-configs:
+    internal: true
+    run: "once"
+    cmd: |-
+      cp \
+        {{.ROOT_DIR}}/tools/yscope-dev-utils/exports/lint-configs/.rustfmt.toml \
+        {{.ROOT_DIR}}/.rustfmt.toml
+
+  # Runs `cargo fmt` with the nightly toolchain in the root Rust workspace directory with the
+  # specified flags.
+  #
+  # @param {string} CARGO_FMT_FLAGS The flags to pass to the `cargo fmt` command.
+  cargo-workspace-fmt:
+    internal: true
+    requires:
+      vars: ["CARGO_FMT_FLAGS"]
+    dir: "{{.ROOT_DIR}}"
+    deps: ["rust-lint-configs"]
+    cmd: |-
+      cargo "+{{.G_RUST_NIGHTLY_TOOLCHAIN}}" fmt --all -- {{.CARGO_FMT_FLAGS}}
+
+  # Runs `cargo clippy` with the nightly toolchain in the root Rust workspace directory with the
+  # specified flags.
+  #
+  # @param {string} CARGO_CLIPPY_FLAGS The flags to pass to the `cargo clippy` command.
+  cargo-workspace-clippy:
+    internal: true
+    requires:
+      vars: ["CARGO_CLIPPY_FLAGS"]
+    dir: "{{.ROOT_DIR}}"
+    cmd: |-
+      cargo "+{{.G_RUST_NIGHTLY_TOOLCHAIN}}" clippy --workspace --all-targets --all-features \
+        {{.CARGO_CLIPPY_FLAGS}}

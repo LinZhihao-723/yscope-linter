@@ -1,0 +1,7 @@
+# Build-related directories and files
+.task
+build
+target
+
+# Generated lint configs
+.rustfmt.toml

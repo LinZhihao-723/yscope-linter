@@ -1,0 +1,6 @@
+version: "3"
+
+tasks:
+  rust:
+    dir: "{{.ROOT_DIR}}"
+    cmd: "cargo nextest run --workspace --all-features --no-fail-fast"
