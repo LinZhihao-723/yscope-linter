@@ -8,20 +8,53 @@ use crate::markdown::Preceding;
 use crate::rules::greedy_wrap::line_kind::Body;
 use crate::rules::greedy_wrap::line_kind::LineKind;
 
-/// Two consecutive comment lines of the same paragraph, so the fit test applies to them.
+/// A prose paragraph of two or more comment lines, so the fit test applies to each pair of its
+/// consecutive lines.
 ///
 /// # Type Parameters
 ///
 /// * `'comment` - The lifetime of the comment lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct JoinablePair<'comment> {
-    pub line: &'comment CommentLine,
-    pub next_line: &'comment CommentLine,
+pub struct ProseParagraph<'comment> {
+    pub lines: &'comment [CommentLine],
 
-    /// How the paragraph precedes `next_line`: [`Preceding::Paragraph`], or
-    /// [`Preceding::LazyParagraph`] if the paragraph is a lazy continuation of a list item's
-    /// paragraph.
-    pub preceding: Preceding,
+    /// The kind of the paragraph's first line.
+    pub start: ProseStart,
+}
+
+/// The kind of line that starts a prose paragraph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProseStart {
+    /// A list item's marker line.
+    ListItem,
+
+    /// A lazy continuation line of a list item's paragraph: a text line, right after it, in an
+    /// outer container.
+    LazyContinuation,
+
+    /// Any other text line.
+    Text,
+}
+
+impl ProseStart {
+    /// # Returns
+    ///
+    /// How the paragraph precedes each of its lines after the first: [`Preceding::LazyParagraph`]
+    /// if the paragraph is a lazy continuation of a list item's paragraph, or else
+    /// [`Preceding::Paragraph`].
+    pub const fn preceding(self) -> Preceding {
+        match self {
+            Self::LazyContinuation => Preceding::LazyParagraph,
+            Self::ListItem | Self::Text => Preceding::Paragraph,
+        }
+    }
+
+    /// # Returns
+    ///
+    /// Whether the paragraph starts on a list item's marker line.
+    pub const fn is_list_item(self) -> bool {
+        matches!(self, Self::ListItem)
+    }
 }
 
 /// Splits comment lines into blocks: maximal runs of own-line comments on consecutive lines with
@@ -34,41 +67,48 @@ pub fn blocks(comment_lines: &[CommentLine]) -> impl Iterator<Item = &[CommentLi
     comment_lines.chunk_by(|previous, current| current.continues_block(previous))
 }
 
-/// Walks one block and finds the consecutive lines that belong to the same prose paragraph. The
-/// lines of a paragraph that a setext heading underline turns into a heading are not joinable.
+/// Walks one block and finds its prose paragraphs of two or more lines. The lines of a paragraph
+/// that a setext heading underline turns into a heading are not part of any.
 ///
 /// # Returns
 ///
-/// The joinable pairs of the block, in source order.
-pub fn joinable_pairs(block: &[CommentLine]) -> Vec<JoinablePair<'_>> {
+/// The prose paragraphs of the block, in source order.
+pub fn prose_paragraphs(block: &[CommentLine]) -> Vec<ProseParagraph<'_>> {
     let Some(first_line) = block.first() else {
         return Vec::new();
     };
     let mut paragraph_machine = ParagraphMachine::new();
     paragraph_machine.step(Body::new(&first_line.text));
-    let mut joinable_pairs = Vec::new();
-    let mut paragraph_pairs = Vec::new();
-    for (line, next_line) in block.iter().zip(block.iter().skip(1)) {
+    let mut prose_paragraphs = Vec::new();
+    let mut paragraph_start = 0;
+    let mut prose_paragraph = None;
+    for (index, next_line) in block.iter().enumerate().skip(1) {
         match paragraph_machine.step(Body::new(&next_line.text)) {
-            Step::ContinuesParagraph { preceding } => paragraph_pairs.push(JoinablePair {
-                line,
-                next_line,
-                preceding,
-            }),
-            Step::UnderlinesHeading => paragraph_pairs.clear(),
-            Step::EndsParagraph => joinable_pairs.append(&mut paragraph_pairs),
+            Step::ContinuesParagraph { start } => {
+                prose_paragraph = Some(ProseParagraph {
+                    lines: &block[paragraph_start..=index],
+                    start,
+                });
+            }
+            Step::UnderlinesHeading => {
+                prose_paragraph = None;
+                paragraph_start = index;
+            }
+            Step::EndsParagraph => {
+                prose_paragraphs.extend(prose_paragraph.take());
+                paragraph_start = index;
+            }
         }
     }
-    joinable_pairs.append(&mut paragraph_pairs);
-    joinable_pairs
+    prose_paragraphs.extend(prose_paragraph);
+    prose_paragraphs
 }
 
 /// What one line does to the paragraph of the line before it.
 #[derive(Debug)]
 enum Step {
-    /// The line continues the previous line's prose paragraph, which precedes it as `preceding`
-    /// describes.
-    ContinuesParagraph { preceding: Preceding },
+    /// The line continues the previous line's prose paragraph, which a line of kind `start` starts.
+    ContinuesParagraph { start: ProseStart },
 
     /// The line is a setext heading underline, which turns the previous line's prose paragraph into
     /// a heading.
@@ -85,9 +125,8 @@ enum Paragraph {
     Prose {
         continuation_indent: usize,
 
-        /// Whether the paragraph's first line is a lazy continuation line of a list item's
-        /// paragraph: a text line, right after it, in an outer container.
-        is_lazy: bool,
+        /// The kind of the paragraph's first line.
+        start: ProseStart,
     },
 
     /// A link reference definition, whose continuation lines are indented deeper than `def_indent`.
@@ -145,13 +184,13 @@ impl ParagraphMachine {
         let kind = match self.paragraph {
             Some(Paragraph::Prose {
                 continuation_indent,
-                is_lazy,
+                start,
             }) if indent == continuation_indent => {
-                body.kind(continuation_indent, Preceding::paragraph(is_lazy))
+                body.kind(continuation_indent, start.preceding())
             }
             _ => body.kind(self.container_indent(indent), Preceding::NoParagraph),
         };
-        let is_lazy = self.is_lazy_continuation(indent);
+        let text_start = self.text_start(indent);
         match kind {
             LineKind::Fence { fence } => {
                 self.paragraph = Some(Paragraph::FencedCode { fence });
@@ -187,23 +226,22 @@ impl ParagraphMachine {
                 self.list_indents.push(content_indent);
                 self.paragraph = Some(Paragraph::Prose {
                     continuation_indent: content_indent,
-                    is_lazy: false,
+                    start: ProseStart::ListItem,
                 });
             }
             LineKind::Tagged => {
                 self.paragraph = Some(Paragraph::Prose {
                     continuation_indent: indent,
-                    is_lazy,
+                    start: text_start,
                 });
             }
-            LineKind::Text => return self.step_text(indent, is_lazy),
+            LineKind::Text => return self.step_text(indent, text_start),
         }
         Step::EndsParagraph
     }
 
-    /// Moves the walk to a [`LineKind::Text`] line indented by `indent`. `is_lazy` tells whether
-    /// the line is a lazy continuation line of the current paragraph, if it starts a prose
-    /// paragraph.
+    /// Moves the walk to a [`LineKind::Text`] line indented by `indent`, which is of kind
+    /// `text_start` if it starts a prose paragraph.
     ///
     /// The line continues the current paragraph in these cases:
     ///
@@ -215,15 +253,13 @@ impl ParagraphMachine {
     /// # Returns
     ///
     /// What the line does to the previous line's paragraph.
-    fn step_text(&mut self, indent: usize, is_lazy: bool) -> Step {
+    fn step_text(&mut self, indent: usize, text_start: ProseStart) -> Step {
         match self.paragraph {
             Some(Paragraph::Prose {
                 continuation_indent,
-                is_lazy,
+                start,
             }) if indent == continuation_indent => {
-                return Step::ContinuesParagraph {
-                    preceding: Preceding::paragraph(is_lazy),
-                };
+                return Step::ContinuesParagraph { start };
             }
             Some(Paragraph::LinkDef { def_indent }) if indent > def_indent => {
                 return Step::EndsParagraph;
@@ -234,13 +270,13 @@ impl ParagraphMachine {
             self.list_indents.clear();
             Paragraph::Prose {
                 continuation_indent: 0,
-                is_lazy,
+                start: text_start,
             }
         } else if self.list_indents.contains(&indent) {
             self.close_list_items_deeper_than(indent);
             Paragraph::Prose {
                 continuation_indent: indent,
-                is_lazy,
+                start: text_start,
             }
         } else {
             Paragraph::Preformatted
@@ -250,15 +286,19 @@ impl ParagraphMachine {
 
     /// # Returns
     ///
-    /// Whether a line indented by `indent` that starts a prose paragraph is a lazy continuation
-    /// line of the current paragraph: the current paragraph is prose in a list item that the line's
-    /// container is outside of.
-    fn is_lazy_continuation(&self, indent: usize) -> bool {
-        matches!(
+    /// The kind of a text line indented by `indent` that starts a prose paragraph:
+    /// [`ProseStart::LazyContinuation`] if the current paragraph is prose in a list item that the
+    /// line's container is outside of, or else [`ProseStart::Text`].
+    fn text_start(&self, indent: usize) -> ProseStart {
+        if matches!(
             self.paragraph,
             Some(Paragraph::Prose { continuation_indent, .. })
                 if self.container_indent(continuation_indent) > self.container_indent(indent)
-        )
+        ) {
+            ProseStart::LazyContinuation
+        } else {
+            ProseStart::Text
+        }
     }
 
     /// # Returns
@@ -289,13 +329,18 @@ mod tests {
 
     /// # Returns
     ///
-    /// The line numbers of the first line of each joinable pair in `source_text`.
+    /// The line numbers of the lines in `source_text` that are followed by a line of their prose
+    /// paragraph.
     fn joinable_lines(source_text: &str) -> Vec<usize> {
         let lexed = lexer::lex(source_text);
         assert_eq!(lexed.error, None, "{source_text:?}");
         blocks(&lexed.comment_lines)
-            .flat_map(joinable_pairs)
-            .map(|pair| pair.line.line)
+            .flat_map(prose_paragraphs)
+            .flat_map(|prose_paragraph| {
+                prose_paragraph.lines[..prose_paragraph.lines.len() - 1]
+                    .iter()
+                    .map(|line| line.line)
+            })
             .collect()
     }
 

@@ -409,9 +409,9 @@ struct BodyScanner<'context, 'ast> {
     /// is already recorded.
     forwarded_sites: HashSet<Position>,
 
-    /// The callees whose error the `Err(binding)` pattern of the enclosing `match` arms and `if
-    /// let` branches binds, by binding name, such as `foo` for `e` in `Err(e) => ..` of `match
-    /// foo()`.
+    /// The callees whose error the `Err(binding)` pattern of the enclosing `match` arms and
+    /// `if let` branches binds, by binding name, such as `foo` for `e` in `Err(e) => ..` of
+    /// `match foo()`.
     err_binding_callees: HashMap<String, Callee>,
 
     facts: BodyFacts,

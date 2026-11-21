@@ -42,8 +42,8 @@ impl VisibilityGroup {
 
     /// # Returns
     ///
-    /// The group's name as the convention spells it: `pub`, `pub(crate)`, `pub(super)`, `pub(in
-    /// path)` or `private`.
+    /// The group's name as the convention spells it: `pub`, `pub(crate)`, `pub(super)`,
+    /// `pub(in path)` or `private`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pub => "pub",

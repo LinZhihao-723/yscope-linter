@@ -47,8 +47,8 @@ pub struct VariantBullet {
     pub position: Position,
 }
 
-/// A bullet that documents forwarded errors, such as ``* Forwards [`foo`]'s return values on
-/// failure.``.
+/// A bullet that documents forwarded errors, such as
+/// ``* Forwards [`foo`]'s return values on failure.``.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardBullet {
     pub kind: ForwardKind,
@@ -100,8 +100,8 @@ pub enum FormatFindingKind {
     DuplicateSection,
 }
 
-/// Finds and parses the fn's `# Errors` section, as [`section::find`] selects it. Another `#
-/// Errors` header of the same level becomes a duplicate-section format finding.
+/// Finds and parses the fn's `# Errors` section, as [`section::find`] selects it. Another
+/// `# Errors` header of the same level becomes a duplicate-section format finding.
 ///
 /// # Returns
 ///
@@ -131,8 +131,8 @@ pub fn parse(doc_lines: &[DocLine]) -> Option<ErrorsSection> {
 const CANONICAL_FORWARD_WORDING: &str = " return values on failure";
 
 /// The wording between the possessive of a canonical mapped forward bullet and the reference to the
-/// variant the errors are mapped into, as in ``Forwards [`f`]'s return values as [`E::V`] on
-/// failure``.
+/// variant the errors are mapped into, as in
+/// ``Forwards [`f`]'s return values as [`E::V`] on failure``.
 const MAPPED_FORWARD_WORDING: &str = " return values as ";
 
 /// The wording that follows the variant reference of a canonical mapped forward bullet.
@@ -304,8 +304,8 @@ fn classify_forward_into(
 /// a canonical forward wording:
 ///
 /// * `'s return values on failure`.
-/// * `'s return values as`, then a reference to the variant the errors are mapped into, then `on
-///   failure`.
+/// * `'s return values as`, then a reference to the variant that the errors are mapped into, then
+///   `on failure`.
 ///
 /// # Returns
 ///

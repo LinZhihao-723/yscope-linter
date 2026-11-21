@@ -191,19 +191,6 @@ pub enum Preceding {
     LazyParagraph,
 }
 
-impl Preceding {
-    /// # Returns
-    ///
-    /// How a prose paragraph precedes its next line: lazily if `is_lazy`.
-    pub const fn paragraph(is_lazy: bool) -> Self {
-        if is_lazy {
-            Self::LazyParagraph
-        } else {
-            Self::Paragraph
-        }
-    }
-}
-
 /// The start conditions of an HTML block, numbered 1 to 7 in CommonMark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HtmlBlockCondition {
