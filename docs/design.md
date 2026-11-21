@@ -560,9 +560,9 @@ with its rest.
 
 rustfmt fills the first paragraph of a list item at whitespace (its `ItemizedBlock`), with `*`, `-`
 and `+` bullets and 1- or 2-digit ordered items, so it splits code spans and links there and splits
-them again after a manual fix. `ProseParagraph::is_list_item` is set for a paragraph that starts on
-a `Bullet` line, and a split token in one gets a hint to reword the item instead, like the rustfmt
-hint below.
+them again after a manual fix. `ProseParagraph::start` is `ProseStart::ListItem` for a paragraph
+that starts on a `Bullet` line, and a split token in one gets a hint to reword the item instead,
+like the rustfmt hint below.
 
 ### rustfmt hint
 
@@ -625,9 +625,8 @@ paragraph.
 `ParagraphMachine` walks one block from top to bottom. It is created per block, so its state never
 crosses a block boundary. It keeps:
 
-* `paragraph`: the current paragraph, if any. It is
-  `Prose { continuation_indent, is_lazy, is_list_item }`, `LinkDef { def_indent }`, `Preformatted`,
-  `Html { condition }` or `FencedCode { fence }`.
+* `paragraph`: the current paragraph, if any. It is `Prose { continuation_indent, start }`,
+  `LinkDef { def_indent }`, `Preformatted`, `Html { condition }` or `FencedCode { fence }`.
 * `list_indents`: the content indents of the list items still open, in increasing order. A list item
   stays open across blank lines, so a loose item's later paragraphs are still prose.
 
@@ -636,10 +635,11 @@ line's paragraph, ends it, or underlines it as a setext heading. `prose_paragrap
 of the current paragraph and drops them on an underline, so no line of a setext heading is checked.
 
 A line at the continuation indent of the current `Prose` paragraph is classified with that indent as
-its container and `Preceding::Paragraph`, or `Preceding::LazyParagraph` if the paragraph `is_lazy`.
-Any other line is classified with `Preceding::NoParagraph`, inside the deepest open list item whose
-content indent is at most the line's indent. `N` is joinable only when it is a `Text` line at the
-continuation indent of a `Prose` paragraph. Every step also updates the state:
+its container and `Preceding::Paragraph`, or `Preceding::LazyParagraph` if the paragraph starts with
+a `ProseStart::LazyContinuation` line. Any other line is classified with `Preceding::NoParagraph`,
+inside the deepest open list item whose content indent is at most the line's indent. `N` is joinable
+only when it is a `Text` line at the continuation indent of a `Prose` paragraph. Every step also
+updates the state:
 
 * A line inside a fence ends the paragraph, and a matching fence line closes the fence.
 * A line inside an HTML block is raw. The line that meets the block's end condition closes it.
@@ -659,10 +659,10 @@ continuation indent of a `Prose` paragraph. Every step also updates the state:
   it starts `Prose` at that indent and closes the deeper items. With any other indent, it starts
   `Preformatted`.
 
-A `Prose` paragraph that a `Text` or `Tagged` line starts `is_lazy` when the paragraph before it is
-prose in a deeper list item than the line's container. Markdown makes such a line a lazy
-continuation of the item, so a following `2.` starts a sibling item there, while after a paragraph
-of the same container it continues the paragraph.
+A `Text` or `Tagged` line starts a `Prose` paragraph as a `LazyContinuation` when the paragraph
+before it is prose in a deeper list item than the line's container. Markdown makes such a line a
+lazy continuation of the item, so a following `2.` starts a sibling item there, while after a
+paragraph of the same container it continues the paragraph.
 
 ### Design notes
 

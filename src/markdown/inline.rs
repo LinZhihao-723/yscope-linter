@@ -11,8 +11,40 @@ pub enum InlineKind {
     Link,
 }
 
+/// A pair of brackets that [`closing_bracket`] matches.
+#[derive(Debug, Clone, Copy)]
+pub enum Bracket {
+    /// The `[` and `]` pair.
+    Square,
+
+    /// The `(` and `)` pair.
+    Round,
+}
+
+impl Bracket {
+    /// # Returns
+    ///
+    /// The byte of the opening bracket.
+    pub const fn open(self) -> u8 {
+        match self {
+            Self::Square => b'[',
+            Self::Round => b'(',
+        }
+    }
+
+    /// # Returns
+    ///
+    /// The byte of the closing bracket.
+    pub const fn close(self) -> u8 {
+        match self {
+            Self::Square => b']',
+            Self::Round => b')',
+        }
+    }
+}
+
 /// The text of one paragraph, with its lines joined by one space each.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ParagraphText {
     text: String,
 
@@ -146,7 +178,7 @@ impl ParagraphText {
 }
 
 /// A position in a [`ParagraphText`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TextPosition {
     /// The 0-based index of the paragraph line.
     pub line_index: usize,
@@ -210,26 +242,17 @@ impl<'paragraph> Token<'paragraph> {
     /// # Returns
     ///
     /// The whitespace-separated pieces of the token, in order. Each piece is on one line.
-    pub fn pieces(self) -> Vec<Self> {
-        let mut pieces = Vec::new();
-        let mut piece_start = None;
-        for (offset, current) in self
-            .text()
-            .char_indices()
-            .chain([(self.end - self.start, ' ')])
-        {
-            if !current.is_whitespace() {
-                piece_start.get_or_insert(offset);
-            } else if let Some(start) = piece_start.take() {
-                pieces.push(Self {
-                    paragraph_text: self.paragraph_text,
-                    start: self.start + start,
-                    end: self.start + offset,
-                    split_kind: None,
-                });
+    pub fn pieces(self) -> impl Iterator<Item = Self> + 'paragraph {
+        let text = self.text();
+        text.split_whitespace().map(move |piece| {
+            let start = self.start + (piece.as_ptr().addr() - text.as_ptr().addr());
+            Self {
+                paragraph_text: self.paragraph_text,
+                start,
+                end: start + piece.len(),
+                split_kind: None,
             }
-        }
-        pieces
+        })
     }
 }
 
@@ -238,7 +261,7 @@ impl<'paragraph> Token<'paragraph> {
 /// # Type Parameters
 ///
 /// * `'text` - The lifetime of the text the code span is in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct CodeSpan<'text> {
     /// The code between the backtick runs, without surrounding whitespace.
     pub code: &'text str,
@@ -273,10 +296,12 @@ impl<'text> CodeSpan<'text> {
 
 /// # Returns
 ///
-/// The byte offset in `text` of the bracket that closes the `open` bracket at `start`, skipping
+/// The byte offset in `text` of the bracket that closes the opening `bracket` at `start`, skipping
 /// nested pairs, backslash escapes, code spans and unclosed backtick runs, or [`None`] if there is
 /// none.
-pub fn closing_bracket(text: &str, start: usize, open: u8, close: u8) -> Option<usize> {
+pub fn closing_bracket(text: &str, start: usize, bracket: Bracket) -> Option<usize> {
+    let open = bracket.open();
+    let close = bracket.close();
     let bytes = text.as_bytes();
     let mut depth = 0_usize;
     let mut index = start;
@@ -314,11 +339,11 @@ pub fn closing_bracket(text: &str, start: usize, open: u8, close: u8) -> Option<
 /// The byte offset just past the link's `(dest)` if one follows its text, or else just past its
 /// text. [`None`] if the text has no closing `]`.
 fn link_end(text: &str, start: usize) -> Option<usize> {
-    let after_text = closing_bracket(text, start, b'[', b']')? + 1;
+    let after_text = closing_bracket(text, start, Bracket::Square)? + 1;
     Some(
         text[after_text..]
             .starts_with('(')
-            .then(|| closing_bracket(text, after_text, b'(', b')'))
+            .then(|| closing_bracket(text, after_text, Bracket::Round))
             .flatten()
             .map_or(after_text, |tail_end| tail_end + 1),
     )
@@ -482,6 +507,17 @@ mod tests {
     }
 
     #[test]
+    fn split_kind_is_that_of_the_first_inline_element_a_line_break_falls_in() {
+        let paragraph_text = ParagraphText::new(&["`a", "b`[c", "d]"]);
+        let tokens: Vec<_> = paragraph_text
+            .tokens()
+            .into_iter()
+            .map(|token| (token.text(), token.split_kind()))
+            .collect();
+        assert_eq!(tokens, [("`a b`[c d]", Some(InlineKind::CodeSpan))]);
+    }
+
+    #[test]
     fn width_counts_scalars_and_one_column_per_line_break() {
         let paragraph_text = ParagraphText::new(&["`é", "b`"]);
         let widths: Vec<_> = paragraph_text
@@ -498,7 +534,6 @@ mod tests {
         let tokens = paragraph_text.tokens();
         let pieces: Vec<_> = tokens[1]
             .pieces()
-            .into_iter()
             .map(|piece| (piece.text(), piece.start(), piece.end(), piece.split_kind()))
             .collect();
         let position = |line_index, offset| TextPosition { line_index, offset };

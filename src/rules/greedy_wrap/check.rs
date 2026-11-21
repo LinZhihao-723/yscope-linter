@@ -1,4 +1,5 @@
-//! The entry point of the `comment-greedy-wrap` rule: the fit test and its diagnostics.
+//! The entry point of the `comment-greedy-wrap` rule: the fit test, the split-token check and their
+//! diagnostics.
 
 use crate::config::Width;
 use crate::diagnostic::Diagnostic;
@@ -96,7 +97,9 @@ impl<'comment> Finding<'comment> {
         let tokens = paragraph_text.tokens();
         let split_tokens = tokens
             .iter()
-            .filter_map(|token| SplitToken::find(*token, &lines, prose_paragraph.is_list_item))
+            .filter_map(|token| {
+                SplitToken::find(*token, &lines, prose_paragraph.start.is_list_item())
+            })
             .map(Self::SplitToken);
         let underfilled_lines = (1..lines.len())
             .filter_map(|next_index| {
@@ -104,7 +107,7 @@ impl<'comment> Finding<'comment> {
                     &lines,
                     &tokens,
                     next_index,
-                    prose_paragraph.preceding,
+                    prose_paragraph.start.preceding(),
                     width,
                 )
             })
@@ -211,21 +214,21 @@ impl<'comment> UnderfilledLine<'comment> {
         let line = lines[next_index - 1].comment_line;
         let next_line = &lines[next_index];
         let room = width.columns().checked_sub(line.width + 1)?;
-        tokens
+        let next_line_splits = tokens
             .iter()
             .skip_while(|token| token.end().line_index < next_index)
             .flat_map(|token| {
-                if token.width() <= next_line.capacity {
-                    vec![*token]
-                } else {
-                    token.pieces()
-                }
+                let fits = token.width() <= next_line.capacity;
+                fits.then_some(*token)
+                    .into_iter()
+                    .chain((!fits).then(|| token.pieces()).into_iter().flatten())
             })
             .skip_while(|unit| unit.end().line_index < next_index)
             .map_while(|unit| {
                 (unit.start().line_index == next_index && unit.end().line_index == next_index)
                     .then(|| next_line.text.split_at(unit.end().offset))
-            })
+            });
+        next_line_splits
             .take_while(|(moved, _)| moved.chars().count() <= room)
             .enumerate()
             .find(|(_, (_, rest))| {
@@ -682,17 +685,27 @@ mod tests {
         let source_text = "/// [`storage::ReadyTasks`] converted into [`Result<(SessionId, \
                            Vec<InboundEntry>),\n/// StorageClientError>`].\n";
         let flagged = diagnostics(source_text, 100);
-        assert_eq!(flagged.len(), 1);
-        assert_eq!(flagged[0].position(), Position { line: 1, column: 1 });
-        assert_eq!(flagged[0].kind(), RuleId::CommentGreedyWrap.into());
+        let reported: Vec<_> = flagged
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.position(),
+                    diagnostic.kind(),
+                    diagnostic.anchor(),
+                    diagnostic.message().to_owned(),
+                )
+            })
+            .collect();
         assert_eq!(
-            flagged[0].anchor(),
-            LineSpan::new(1, 2).expect("valid span")
-        );
-        assert_eq!(
-            flagged[0].message(),
-            "link `[`Result<(SessionId, Vec<InboundEntry>), StorageClientError>`].` (63 columns) \
-             is split across lines but fits within 100 on one line; keep it whole"
+            reported,
+            [(
+                Position { line: 1, column: 1 },
+                RuleId::CommentGreedyWrap.into(),
+                LineSpan::new(1, 2).expect("valid span"),
+                "link `[`Result<(SessionId, Vec<InboundEntry>), StorageClientError>`].` (63 \
+                 columns) is split across lines but fits within 100 on one line; keep it whole"
+                    .to_owned()
+            )]
         );
 
         let flagged = diagnostics("fn f() {\n    // a `b\n    // c\n    // d` e\n}\n", 100);
@@ -721,16 +734,32 @@ mod tests {
     #[test]
     fn split_token_in_a_list_item_gets_the_rustfmt_hint() {
         let hint = ", but rustfmt fills list items at whitespace, so reword the item instead";
-        for (source_text, has_hint) in [
-            ("/// * a `b\n///   c`\n", true),
-            ("// 1. a `b\n//    c`\n", true),
-            ("/// * a\n///\n///   b `c\n///   d`\n", false),
-            ("/// a `b\n/// c`\n", false),
+        for (source_text, code_span, has_hint) in [
+            ("/// * a `b\n///   c`\n", "`b c`", true),
+            ("// 1. a `b\n//    c`\n", "`b c`", true),
+            ("/// * a\n///\n///   b `c\n///   d`\n", "`c d`", false),
+            ("/// a `b\n/// c`\n", "`b c`", false),
         ] {
-            let messages = messages(source_text, 100);
-            assert_eq!(messages.len(), 1, "{source_text:?}");
-            assert_eq!(messages[0].ends_with(hint), has_hint, "{source_text:?}");
+            let mut expected = format!(
+                "code span `{code_span}` (5 columns) is split across lines but fits within 100 on \
+                 one line; keep it whole"
+            );
+            if has_hint {
+                expected.push_str(hint);
+            }
+            assert_eq!(messages(source_text, 100), [expected], "{source_text:?}");
         }
+    }
+
+    #[test]
+    fn split_token_that_starts_on_the_next_line_ends_the_search() {
+        assert_eq!(
+            messages("// aaaa\n// `b\n// cccc`\n", 100),
+            [
+                "code span ``b cccc`` (8 columns) is split across lines but fits within 100 on \
+                 one line; keep it whole"
+            ]
+        );
     }
 
     #[test]
@@ -749,6 +778,22 @@ mod tests {
             [
                 "line is 11 columns wide and the next line's first word `c` (1 column) fits \
                  within 13; move it up"
+            ]
+        );
+    }
+
+    #[test]
+    fn token_in_a_list_item_fits_within_the_continuation_line_capacity() {
+        // The first line's prefix `/// ` is 4 columns wide, the continuation's `///   ` is 6, and
+        // the code span is 7.
+        let source_text = "/// * a `bb\n///   cc`\n";
+        assert_eq!(diagnostics(source_text, 12), []);
+        assert_eq!(
+            messages(source_text, 13),
+            [
+                "code span ``bb cc`` (7 columns) is split across lines but fits within 13 on one \
+                 line; keep it whole, but rustfmt fills list items at whitespace, so reword the \
+                 item instead"
             ]
         );
     }

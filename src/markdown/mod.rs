@@ -8,6 +8,7 @@ mod line;
 pub use block_start::BlockStart;
 pub use block_start::HtmlBlockCondition;
 pub use block_start::Preceding;
+pub use inline::Bracket;
 pub use inline::CodeSpan;
 pub use inline::InlineKind;
 pub use inline::ParagraphText;

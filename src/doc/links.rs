@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::markdown;
+use crate::markdown::Bracket;
 use crate::markdown::CodeSpan;
 use crate::markdown::FenceTracker;
 use crate::markdown::closing_bracket;
@@ -174,14 +175,14 @@ struct Link {
 ///
 /// The link, or [`None`] if the label has no closing `]`.
 fn link(text: &str, start: usize, definitions: &LinkDefinitions) -> Option<Link> {
-    let label_end = closing_bracket(text, start, b'[', b']')?;
+    let label_end = closing_bracket(text, start, Bracket::Square)?;
     let label = &text[start + 1..label_end];
     let after_label = label_end + 1;
     let label_code = single_code_span(label);
     let rest = &text[after_label..];
 
     let (target, end) = if rest.starts_with('(') {
-        let close = closing_bracket(text, after_label, b'(', b')')?;
+        let close = closing_bracket(text, after_label, Bracket::Round)?;
         let inner = text[after_label + 1..close].trim();
         let target = inner.split_whitespace().next().unwrap_or("");
         let target = target
@@ -190,7 +191,7 @@ fn link(text: &str, start: usize, definitions: &LinkDefinitions) -> Option<Link>
             .unwrap_or(target);
         (Some(target.to_owned()), close + 1)
     } else if rest.starts_with('[') {
-        let close = closing_bracket(text, after_label, b'[', b']')?;
+        let close = closing_bracket(text, after_label, Bracket::Square)?;
         let reference_label = &text[after_label + 1..close];
         let reference_label = if reference_label.trim().is_empty() {
             label
