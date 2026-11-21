@@ -1,5 +1,5 @@
-//! Parsing a docstring section that documents parameters one bullet each, such as `# Type
-//! Parameters` and `# Parameters`, and comparing its bullets with an item's parameters.
+//! Parsing a docstring section that documents parameters one bullet each, such as
+//! `# Type Parameters` and `# Parameters`, and comparing its bullets with an item's parameters.
 
 use crate::diagnostic::Position;
 use crate::doc::doc_lines::DocLine;

@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::markdown;
+use crate::markdown::CodeSpan;
 use crate::markdown::FenceTracker;
+use crate::markdown::closing_bracket;
 
 /// Where a reference's path comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +124,7 @@ pub fn references(text: &str, definitions: &LinkDefinitions) -> Vec<Reference> {
     while index < bytes.len() {
         match bytes[index] {
             b'\\' => index += 2,
-            b'`' => match code_span(text, index) {
+            b'`' => match CodeSpan::parse(text, index) {
                 Some(code_span) => {
                     found.push(Reference {
                         kind: ReferenceKind::BareCode,
@@ -159,53 +161,11 @@ pub fn references(text: &str, definitions: &LinkDefinitions) -> Vec<Reference> {
     found
 }
 
-/// A code span found at a backtick run.
-///
-/// # Type Parameters
-///
-/// * `'text` - The lifetime of the text the code span is in.
-struct CodeSpan<'text> {
-    code: &'text str,
-    end: usize,
-}
-
 /// A link found at a `[`.
 struct Link {
     /// The path the link names, if it names one.
     path_text: Option<String>,
     end: usize,
-}
-
-/// Parses the code span that starts with the backtick run at `start`.
-///
-/// # Returns
-///
-/// The code span, or [`None`] if the run has no closing run of the same length.
-fn code_span(text: &str, start: usize) -> Option<CodeSpan<'_>> {
-    let bytes = text.as_bytes();
-    let run_len = bytes[start..]
-        .iter()
-        .take_while(|byte| **byte == b'`')
-        .count();
-    let mut index = start + run_len;
-    while index < bytes.len() {
-        if bytes[index] == b'`' {
-            let closing_len = bytes[index..]
-                .iter()
-                .take_while(|byte| **byte == b'`')
-                .count();
-            if closing_len == run_len {
-                return Some(CodeSpan {
-                    code: text[start + run_len..index].trim(),
-                    end: index + closing_len,
-                });
-            }
-            index += closing_len;
-        } else {
-            index += 1;
-        }
-    }
-    None
 }
 
 /// Parses the link whose label starts with the `[` at `start`.
@@ -256,46 +216,13 @@ fn link(text: &str, start: usize, definitions: &LinkDefinitions) -> Option<Link>
 
 /// # Returns
 ///
-/// The index of the bracket that closes the one at `start`, skipping nested pairs and code spans,
-/// or [`None`] if there is none.
-fn closing_bracket(text: &str, start: usize, open: u8, close: u8) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut depth = 0_usize;
-    let mut index = start;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if byte == b'\\' {
-            index += 2;
-            continue;
-        }
-        if byte == b'`'
-            && let Some(code_span) = code_span(text, index)
-        {
-            index = code_span.end;
-            continue;
-        }
-        if byte == open {
-            depth += 1;
-        } else if byte == close {
-            depth -= 1;
-            if depth == 0 {
-                return Some(index);
-            }
-        }
-        index += 1;
-    }
-    None
-}
-
-/// # Returns
-///
 /// The code of `label` if the whole label is one code span, such as `` `Foo::bar` ``.
 fn single_code_span(label: &str) -> Option<&str> {
     let trimmed = label.trim();
     if !trimmed.starts_with('`') {
         return None;
     }
-    let code_span = code_span(trimmed, 0)?;
+    let code_span = CodeSpan::parse(trimmed, 0)?;
     (code_span.end == trimmed.len()).then_some(code_span.code)
 }
 

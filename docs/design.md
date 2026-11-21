@@ -125,7 +125,8 @@ Per-file core:
 * `src/lexer.rs`: the [comment lexer](#comment-lexer).
 * `src/markdown/`: the [line-level Markdown classifier](#markdown-classifier) the comment and
   docstring rules share. `line.rs` recognizes indents, ATX headers, fences, list items and link
-  reference definitions, and `block_start.rs` classifies the block that a line opens.
+  reference definitions, `block_start.rs` classifies the block that a line opens, and `inline.rs`
+  splits a paragraph into [inline tokens](#inline-tokens).
 * `src/suppression.rs`: [suppression](#suppression-internals) parsing, coverage, and
   unused-suppression reporting.
 * `src/diagnostic.rs`: diagnostic codes, positions, anchor spans, sorting and rendering.
@@ -150,7 +151,7 @@ Rules:
   dispatches a file to each enabled rule.
 * `src/rules/greedy_wrap/`: `line_kind.rs` classifies lines, `paragraph.rs` splits blocks and runs
   the paragraph machine, `rustfmt_lists.rs` finds the lines that rustfmt wraps one column early, and
-  `check.rs` holds the `Checker` with the fit test.
+  `check.rs` holds the `Checker` with the fit test and the split-token check.
 * `src/rules/errors_doc/`: `items.rs` (item walk), `errors_section.rs` (section parsing),
   `symbol.rs` (matching), `file_index.rs` (per-file index), `body.rs` (body scan), `pass_through.rs`
   (helper pass-through), `macros.rs` (macro handling), `known_apis.rs` (library API tables) and
@@ -483,32 +484,85 @@ Details:
   classifier. GFM tables can't interrupt a paragraph. pulldown-cmark lets a table whose header row
   starts with `|` interrupt one, which the one-line classifier can't see.
 
+### Inline tokens
+
+`inline.rs` reads a whole paragraph, since a code span or a link can span lines.
+`ParagraphText::new` takes the paragraph's lines, each without its prefix and surrounding
+whitespace, and joins them with one space each, as Markdown renders a line break inside a code span
+or link text. `ParagraphText::tokens` splits the text into `Token`s with a hand-written scanner:
+
+* A token is a maximal run without whitespace, except that whitespace inside a code span or a link
+  doesn't end it, so the characters glued to either belong to its token.
+* `CodeSpan::parse` matches a backtick run with the next run of exactly the same length, as in
+  CommonMark. A regex can't, since it needs a backreference, which the `regex` crate doesn't have.
+* A link is a `[` and the `]` that `closing_bracket` balances it with, skipping nested brackets,
+  backslash escapes and code spans, then a `(dest)` with balanced parentheses, if one follows. A
+  `[ref]` after the text is a glued link of its own, so a reference link is one token too.
+* A backslash before ASCII punctuation escapes it, so `` \` `` and `\[` open nothing. A backtick run
+  without a closing run, or a `[` without a matching `]`, is plain text.
+
+A `Token` has its `text`, its `width` in scalars, its `start` and `end` as `TextPosition`s (a line
+index and a byte offset in that line), and its `split_kind`: whether the first line break inside it
+falls in a `CodeSpan` or a `Link`, or `None` if the token is on one line. `Token::pieces` splits a
+token at its whitespace into single-line tokens. The scanner knows nothing about widths, so a
+formatter that refills a paragraph can reuse it: strip each line's prefix, place the tokens
+greedily, replace a token wider than a line by its pieces, and add the prefix back.
+
+`doc/links.rs` resolves references with the same `CodeSpan::parse` and `closing_bracket`.
+
 ## comment-greedy-wrap
 
 The user-facing rule, with an example of every exemption, is in
-[`docs/rules/comment-greedy-wrap.md`](rules/comment-greedy-wrap.md). The `Checker` runs three steps:
-`paragraph::blocks` splits the comment lines into blocks, `paragraph::joinable_pairs` finds the line
-pairs of each block that are in the same paragraph, and the fit test runs on each pair.
+[`docs/rules/comment-greedy-wrap.md`](rules/comment-greedy-wrap.md). The `Checker` runs these steps:
+`paragraph::blocks` splits the comment lines into blocks, `paragraph::prose_paragraphs` finds the
+prose paragraphs of two or more lines in each block, and `ParagraphText::tokens` splits each
+paragraph into tokens. Then the fit test runs on each pair of consecutive lines of a paragraph, and
+the split-token check on each token.
 
 ### Fit test
 
 A pair `(L, N)` is a violation when, for some `k >= 1`,
 
 ```text
-width(L) + 1 + width(first_words(N, k)) <= width
+width(L) + 1 + width(first_tokens(N, k)) <= width
 ```
 
-and the rest of `N` after its first `k` words is empty or opens no block, by `BlockStart::parse`
-with the paragraph's `Preceding`. A rest that opens a block would leave the moved words' line
+and the rest of `N` after its first `k` tokens is empty or opens no block, by `BlockStart::parse`
+with the paragraph's `Preceding`. A rest that opens a block would leave the moved tokens' line
 followed by a list item, a heading or another block, so the fill would change the Markdown.
 
 `width(L)` is `CommentLine::width`, the rtrimmed width of the whole source line (indent, marker and
-text). `first_words(N, k)` is `N`'s body from its first word to the end of its `k`-th word,
+text). `first_tokens(N, k)` is `N`'s body from its first token to the end of its `k`-th token,
 whitespace included. The diagnostic names the smallest valid `k`, in the `first word` form for 1
 and the `first <k> words` form otherwise.
 
+`N`'s tokens are the paragraph's tokens that are on `N`, taken in order:
+
+* A token no wider than `N`'s capacity, the width minus `N`'s prefix (`CommentLine::width` minus
+  the trimmed body's width), is one token of `N`.
+* A wider token is replaced by its `pieces`. The pieces on lines before `N` are skipped.
+* The list ends at the first token that doesn't start and end on `N`: the rest of a split token
+  that fits on a line, which the split-token check reports, a token that runs on to the next line,
+  or the next line's first token.
+
+A piece wider than the room ends the search like any other token, so a long URL is never flagged.
+
 The diagnostic is at `L`'s marker column. Its anchor span is `L` through `N`, since a change to
 either line can create the violation.
+
+### Split tokens
+
+A token whose `split_kind` is set, and that is no wider than the capacity of the line after the one
+it starts on, is split although it fits on a line. It gets the `code span ... is split across lines`
+or `link ... is split across lines` diagnostic, at the marker of its first line, with an anchor span
+over all of its lines. The pairs it spans get no fit-test diagnostic, since their next line starts
+with its rest.
+
+rustfmt fills the first paragraph of a list item at whitespace (its `ItemizedBlock`), with `*`, `-`
+and `+` bullets and 1- or 2-digit ordered items, so it splits code spans and links there and splits
+them again after a manual fix. `ProseParagraph::is_list_item` is set for a paragraph that starts on
+a `Bullet` line, and a split token in one gets a hint to reword the item instead, like the rustfmt
+hint below.
 
 ### rustfmt hint
 
@@ -571,13 +625,14 @@ paragraph.
 `ParagraphMachine` walks one block from top to bottom. It is created per block, so its state never
 crosses a block boundary. It keeps:
 
-* `paragraph`: the current paragraph, if any. It is `Prose { continuation_indent, is_lazy }`,
-  `LinkDef { def_indent }`, `Preformatted`, `Html { condition }` or `FencedCode { fence }`.
+* `paragraph`: the current paragraph, if any. It is
+  `Prose { continuation_indent, is_lazy, is_list_item }`, `LinkDef { def_indent }`, `Preformatted`,
+  `Html { condition }` or `FencedCode { fence }`.
 * `list_indents`: the content indents of the list items still open, in increasing order. A list item
   stays open across blank lines, so a loose item's later paragraphs are still prose.
 
 `step` moves the machine to the next line `N` and returns a `Step`: `N` continues the previous
-line's paragraph, ends it, or underlines it as a setext heading. `joinable_pairs` buffers the pairs
+line's paragraph, ends it, or underlines it as a setext heading. `prose_paragraphs` keeps the lines
 of the current paragraph and drops them on an underline, so no line of a setext heading is checked.
 
 A line at the continuation indent of the current `Prose` paragraph is classified with that indent as
@@ -1922,6 +1977,15 @@ Input:
   preformatted ASCII tree. An earlier `Html` line kind, matched on a leading `<`, misfired on
   `<https://...>` autolinks. `Html` is back as the classifier's HTML block start conditions, which
   autolinks don't meet.
+* Splitting the next line into words at whitespace everywhere, code spans and links included. The
+  rule then asked to pull up the first half of a code span, such as `` `AsyncFnOnce() `` from
+  `` `AsyncFnOnce() -> DbConnectorType` ``, which leaves the span split across lines: unreadable,
+  and not found by a search for the whole span.
+* Tokenizing each line on its own. A code span or a link that already spans two lines would then be
+  two runs of plain text, and the split that the rule exists to prevent would go unreported.
+* Leaving split tokens in list items unreported, since rustfmt fills list items at whitespace. The
+  rule stays strict there, as it does for the fields that rustfmt wraps one column early, and its
+  message asks to reword the item.
 * Asking for the first word only, and leaving the Markdown check to the reader. A move that turns
   the rest of the line into a block can't be applied, so the rule would ask for a fill it then
   rejects, or worse, one that changes the docs.

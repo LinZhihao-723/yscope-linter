@@ -30,8 +30,8 @@ impl Checker {
 
     /// Checks every documented item of one file:
     ///
-    /// * A trait method declaration with parameters other than its receiver must have a `#
-    ///   Parameters` section with one bullet per parameter.
+    /// * A trait method declaration with parameters other than its receiver must document them in a
+    ///   `# Parameters` section, one bullet per parameter.
     /// * A trait method declaration without parameters must not have one.
     /// * Any other item must not have one.
     ///

@@ -68,9 +68,9 @@ pub fn kind(mac: &syn::Macro) -> MacroKind {
 
 /// Parses the tokens of `mac` according to its kind:
 ///
-/// * [`MacroKind::Select`]: the grammar `[biased;] (pat = expr [, if cond] => body [,])* [else =>
-///   body [,]]`. The future expressions and guards are kept as expressions, the bodies as arm
-///   bodies, and the patterns are dropped.
+/// * [`MacroKind::Select`]: `[biased;] (pat = expr [, if cond] => body [,])* [else => body [,]]`.
+///   The future expressions and guards are kept as expressions, the bodies as arm bodies, and the
+///   patterns are dropped.
 /// * [`MacroKind::PatternTaking`]: an expression, a comma, a pattern and an optional `if` guard.
 ///   The expression and the guard are kept.
 /// * Every other kind: a comma-separated list of expressions, or else a block's statements.

@@ -5,10 +5,11 @@ Code: `DOC001`, in the `DOC` set. See the [rule index](README.md) for the codes 
 Every paragraph of a `//`, `///` or `//!` comment must be filled greedily to the width, which is 100
 columns by default. Each line holds as many words as fit, so a line is flagged when the first words
 of the next line in the same paragraph would still fit at its end, and moving them up keeps the
-Markdown as it is.
+Markdown as it is. A code span or a link counts as one word, which is never broken when it fits on a
+line.
 
-The rule only reports under-filled lines. It never rewrites a comment, and it never flags a line for
-being too long.
+The rule only reports under-filled lines, and code spans and links that are split across lines
+although they fit on one. It never rewrites a comment, and it never flags a line for being too long.
 
 ```rust
 /// Returns the number of tasks that are
@@ -35,6 +36,7 @@ fn running_tasks() -> usize {
 ## Contents
 
 * [The fit test](#the-fit-test)
+* [Code spans and links](#code-spans-and-links)
 * [Moves that would change the Markdown](#moves-that-would-change-the-markdown)
 * [Which comments are checked](#which-comments-are-checked)
 * [Comment blocks](#comment-blocks)
@@ -49,20 +51,21 @@ A line `L` is flagged when the next line `N` is in the same paragraph and, for s
 at least 1, both of these hold:
 
 ```text
-width(L) + 1 + width(first_words(N, k)) <= W
+width(L) + 1 + width(first_tokens(N, k)) <= W
 rest(N, k) is empty, or opens no Markdown block that interrupts a paragraph
 ```
 
 * `width(L)` is the width of the whole source line of `L`, without its trailing whitespace.
-* `first_words(N, k)` is the text of `N` after its comment marker and leading whitespace, up to the
-  end of its `k`-th word. Words are separated by whitespace.
-* `rest(N, k)` is what is left of `N` after those words and the whitespace after them.
+* `first_tokens(N, k)` is the text of `N` after its comment marker and leading whitespace, up to the
+  end of its `k`-th token. Tokens are separated by whitespace, but a code span or a link that fits
+  on a line is one token. See [Code spans and links](#code-spans-and-links).
+* `rest(N, k)` is what is left of `N` after those tokens and the whitespace after them.
 * The `1` is the space that would join the two.
 * `W` is the width, 100 by default.
 
-The diagnostic names the smallest such `k`. Usually that is 1, the next line's first word. See
-[Moves that would change the Markdown](#moves-that-would-change-the-markdown) for the second
-condition.
+The diagnostic names the smallest such `k`, and calls the tokens words. Usually that is 1, the next
+line's first word. See [Moves that would change the Markdown](#moves-that-would-change-the-markdown)
+for the second condition.
 
 The test is exact at the width. Here the first line is 95 columns wide, and `as` would bring it to
 98:
@@ -125,31 +128,161 @@ $ yscope-linter --width 11 example.rs
 example.rs:2:5: DOC001 comment-greedy-wrap: line is 9 columns wide and the next line's first word `x` (1 column) fits within 11; move it up
 ```
 
+## Code spans and links
+
+The fit test moves tokens. A token is a run of text without whitespace, except that whitespace
+inside a code span or a link doesn't end it:
+
+* An inline code span starts at a run of backticks and ends at the next run of exactly the same
+  length, as in CommonMark.
+* A link is `[text](dest)`, `[text][ref]` or `[text]`, such as ``[`Foo::bar`]``. Its `]` is the one
+  that balances its `[`. Its text may hold code spans, and brackets inside a code span don't count.
+* Characters glued to a code span or a link, with no whitespace between them, belong to its token,
+  such as an opening `(` or a trailing `.`, `,`, `)` or `'s`.
+
+Each of these lines is one token:
+
+```text
+[`TaskInputsSerializer`](spider_core::types::io::TaskInputsSerializer)
+[the coding guide](https://example.com),
+`AsyncFnOnce() -> DbConnectorType`.
+([`Result<(SessionId, Vec<InboundEntry>), StorageClientError>`]).
+```
+
+A backslash-escaped backtick or bracket opens neither. A backtick run without a closing run of the
+same length, and a `[` without a matching `]`, are plain text, which is split at whitespace. So each
+of these lines is three tokens:
+
+```text
+a `b c
+a ``b` c
+see [the list
+```
+
+### A token that fits on a line moves whole
+
+A token fits on a line when it is no wider than the width minus the line's prefix, which is the
+line's indentation, its comment marker and the whitespace before its text. Such a token is never
+broken, so the rule asks to move it up only when all of it fits:
+
+```rust
+/// The connector factory is an
+/// `AsyncFnOnce() -> DbConnectorType` closure.
+fn f() {}
+```
+
+```console
+$ yscope-linter example.rs
+example.rs:1:1: DOC001 comment-greedy-wrap: line is 31 columns wide and the next line's first word ``AsyncFnOnce() -> DbConnectorType`` (34 columns) fits within 100; move it up
+```
+
+Here the third line is 42 columns wide, and the link with its `.` is 63, which would bring it to
+106. So nothing is flagged, although the first word of the link's code would fit:
+
+```rust
+/// # Returns
+///
+/// [`storage::ReadyTasks`] converted into
+/// [`Result<(SessionId, Vec<InboundEntry>), StorageClientError>`].
+fn ready_tasks_to_result() {}
+```
+
+### Tokens wider than a line
+
+A token wider than a line can never be kept whole. It is split at its whitespace, and its pieces are
+filled like words:
+
+```rust
+/// The comments follow
+/// [the section on comments and docstrings of the coding guidelines that apply to every y-scope Rust repository](https://example.com).
+fn f() {}
+```
+
+```console
+$ yscope-linter example.rs
+example.rs:1:1: DOC001 comment-greedy-wrap: line is 23 columns wide and the next line's first word `[the` (4 columns) fits within 100; move it up
+```
+
+A piece without whitespace that is wider than a line, such as a long URL or path, can be neither
+split nor moved. Nothing is flagged for it:
+
+```rust
+/// See
+/// <https://example.com/a/very/long/path/that/does/not/fit/on/one/line/even/when/it/starts/the/line>.
+fn f() {}
+```
+
+### Tokens split across lines
+
+Tokens are found in the whole paragraph, so a code span or a link can start on one line and end on
+the next. A token that fits on a line but is split across lines gets its own diagnostic, at the
+line where it starts:
+
+```rust
+/// The connector factory is an `AsyncFnOnce() ->
+/// DbConnectorType` closure.
+fn f() {}
+```
+
+```console
+$ yscope-linter example.rs
+example.rs:1:1: DOC001 comment-greedy-wrap: code span ``AsyncFnOnce() -> DbConnectorType`` (34 columns) is split across lines but fits within 100 on one line; keep it whole
+```
+
+The diagnostic names a `link` when the first line break in the token falls inside a link, and a
+`code span` otherwise. No line is asked to take the rest of a split token: once the token is whole,
+the fit test applies again.
+
+A token wider than a line may span lines. Only its pieces are filled, as in
+[Tokens wider than a line](#tokens-wider-than-a-line).
+
+rustfmt fills the first paragraph of a list item at whitespace, so it splits such tokens again. In a
+list item, the diagnostic asks to reword the item instead (see
+[Running with rustfmt](#running-with-rustfmt)):
+
+```rust
+/// * A trait method declaration with parameters other than its receiver must have a `#
+///   Parameters` section with one bullet per parameter.
+fn f() {}
+```
+
+```console
+$ yscope-linter example.rs
+example.rs:1:1: DOC001 comment-greedy-wrap: code span ``# Parameters`` (14 columns) is split across lines but fits within 100 on one line; keep it whole, but rustfmt fills list items at whitespace, so reword the item instead
+```
+
+A reworded item that rustfmt fills without splitting the code span satisfies both:
+
+```rust
+/// * A trait method declaration with parameters other than its receiver must document them in a
+///   `# Parameters` section, one bullet per parameter.
+fn f() {}
+```
+
 ## Moves that would change the Markdown
 
 Moving words up leaves the rest of the next line at the start of a line. If that rest opens a
 Markdown block that can interrupt a paragraph, the move would split the paragraph and change how
-rustdoc renders it. Such a move is never asked for. Here moving `` `num_children `` would leave
-``- 1`, in order.``, which is a list item, so both words of `` `num_children - `` must move
-together:
+rustdoc renders it. Such a move is never asked for. Here moving `n` would leave `- 1, in order.`,
+which is a list item, so both words of `n -` must move together:
 
 ```rust
-/// The prepared children for the input bytes `0` to
-/// `num_children - 1`, in order.
+/// The children are numbered from 0 to
+/// n - 1, in order.
 fn children() {}
 ```
 
 ```console
 $ yscope-linter example.rs
-example.rs:1:1: DOC001 comment-greedy-wrap: line is 52 columns wide and the next line's first 2 words ``num_children -` (15 columns) fit within 100; move them up
+example.rs:1:1: DOC001 comment-greedy-wrap: line is 39 columns wide and the next line's first 2 words `n -` (3 columns) fit within 100; move them up
 ```
 
 When no number of words both fits and leaves a valid rest, nothing is flagged. Here the first line
-is 86 columns wide, and `` `num_children - `` would bring it to 102:
+is 98 columns wide, and `n -` would bring it to 102:
 
 ```rust
-/// The prepared children of [`create_test_prepared_child`] for the input bytes `0` to
-/// `num_children - 1`, in order.
+/// The children of the prepared root are numbered in the order of their input bytes, from 0 up to
+/// n - 1, in order.
 fn children() {}
 ```
 
@@ -733,21 +866,31 @@ example.rs:2:5: DOC001 comment-greedy-wrap: line is 37 columns wide and the next
 ```text
 <path>:<line>:<column>: comment-greedy-wrap: line is <W(L)> columns wide and the next line's first word `<word>` (<W(word)> columns) fits within <W>; move it up
 <path>:<line>:<column>: comment-greedy-wrap: line is <W(L)> columns wide and the next line's first <k> words `<words>` (<W(words)> columns) fit within <W>; move them up
+<path>:<line>:<column>: comment-greedy-wrap: <code span|link> `<token>` (<W(token)> columns) is split across lines but fits within <W> on one line; keep it whole
 ```
 
-The second form names `k` words when moving fewer would leave a rest that opens a Markdown block.
-Either form can end with a hint that rustfmt wraps the comment one column early. See [Running with
-rustfmt](#running-with-rustfmt).
+The first two forms report an under-filled line, and name its words, which are tokens (see
+[Code spans and links](#code-spans-and-links)). The second form names `k` words when moving fewer
+would leave a rest that opens a Markdown block. Either form can end with a hint that rustfmt wraps
+the comment one column early. See [Running with rustfmt](#running-with-rustfmt).
 
-* The line and column point at the comment marker of the under-filled line.
+The third form reports a token that is split across lines (see
+[Tokens split across lines](#tokens-split-across-lines)). In a list item, it ends with a hint that
+rustfmt fills list items at whitespace.
+
+* The line and column point at the comment marker of the under-filled line, or of the line where
+  the split token starts.
 * A count of 1 reads `1 column`.
-* With `--diff` or `FILE:RANGES`, the diagnostic is kept when either of the two lines is selected.
-  So a change to the next line can report the line above it.
+* With `--diff` or `FILE:RANGES`, the diagnostic of an under-filled line is kept when either of the
+  two lines is selected. So a change to the next line can report the line above it. The diagnostic
+  of a split token is kept when any of the token's lines is selected.
 
 To fix it:
 
 * Move the named words up from the next line, then check the lines below it: each move can leave
   room on the next line too.
+* Make a split token whole: move its rest up if it fits, or else move all of it down to the next
+  line.
 * Reflowing the whole paragraph to the width does the same in one step, as long as no line of the
   result starts with a block marker such as `- ` or `1. `.
 * If the lines are short on purpose, give them a structure the rule recognizes: list items, a blank
@@ -759,7 +902,13 @@ To fix it:
 
 Run rustfmt first and the linter second, so the linter sees the comments as rustfmt leaves them.
 With `wrap_comments = true`, rustfmt wraps every comment line longer than `comment_width`, but it
-never fills a short line, which is what this rule checks.
+never fills a short line, which is what this rule checks. The exception is the first paragraph of a
+list item, which rustfmt fills to the width at whitespace.
+
+rustfmt splits code spans and links at whitespace too, so it can leave a split token at the end of a
+line in a list item, and it splits the token again after it is made whole. The rule still reports
+the token, with a hint to reword the item instead, so that no token falls at a line end when rustfmt
+fills it. See [Tokens split across lines](#tokens-split-across-lines) for an example.
 
 Nightly rustfmt wraps some comments one column early, at 99 columns for a `comment_width` of 100
 ([rust-lang/rustfmt#6180](https://github.com/rust-lang/rustfmt/issues/6180)). These comments are
@@ -804,8 +953,12 @@ it. Comments inside array literals get no hint.
 
 ## Known limits
 
-* Lines that are too long are never flagged. Only an under-filled line followed by a word that fits
-  is reported.
+* Lines that are too long are never flagged. Only an under-filled line followed by a word that fits,
+  and a split token that fits on a line, are reported.
+* Every `[` with a matching `]` starts a link token, whether rustdoc resolves it or not.
+* A token wider than a line is split at all of its whitespace, including the whitespace inside the
+  code spans of a long link.
+* Inline HTML, such as `<span class="a b">`, is split at whitespace like plain text.
 * Widths count Unicode scalar values, not display columns. A tab, a wide CJK character and a
   combining mark each count as one column.
 * A hanging-indent continuation, such as `//     c + d` under `// total = a + b +`, starts a
