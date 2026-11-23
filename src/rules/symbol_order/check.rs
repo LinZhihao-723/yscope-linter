@@ -21,7 +21,7 @@ impl Checker {
     ///
     /// # Returns
     ///
-    /// A checker that skips `#[cfg(test)]` items and modules if `skip_tests` is set.
+    /// A checker that skips `#[test]` fns and `#[cfg(test)]` items if `skip_tests` is set.
     pub const fn new(skip_tests: bool) -> Self {
         Self { skip_tests }
     }

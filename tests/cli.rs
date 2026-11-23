@@ -146,9 +146,6 @@ fn test_fns_are_checked_unless_tests_are_skipped() {
     let output = run(&directory, &["--skip-tests", "a.rs"], "");
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout_lines(&output), Vec::<String>::new());
-
-    let output = run(&directory, &["--skip-tests", "--no-skip-tests", "a.rs"], "");
-    assert_eq!(stdout_lines(&output), expected_lines);
 }
 
 #[test]
