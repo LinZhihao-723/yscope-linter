@@ -4,7 +4,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::config::LintConfig;
+use crate::config::CheckConfig;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::DiagnosticKind;
 use crate::file_context::FileContext;
@@ -134,15 +134,30 @@ impl fmt::Display for Code {
     }
 }
 
-/// What `--rule` and a suppression name: one rule, by its name or its code, or the rules of a set,
-/// by the set's prefix. Names are lowercase and codes and prefixes uppercase, as written.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What `--rule`, the `rules` setting and a suppression name: one rule, by its name or its code, or
+/// the rules of a set, by the set's prefix. Names are lowercase and codes and prefixes uppercase,
+/// as written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(try_from = "String")]
 pub enum RuleSelector {
     Rule(RuleId),
     Set(CodeSet),
 }
 
 impl RuleSelector {
+    /// # Returns
+    ///
+    /// The deprecated rules that `selectors` name, each once, in the order they are first named.
+    pub fn deprecated_rule_ids(selectors: &[Self]) -> Vec<RuleId> {
+        let mut deprecated_rule_ids: Vec<RuleId> = Vec::new();
+        for rule_id in selectors.iter().flat_map(|selector| selector.rule_ids()) {
+            if rule_id.is_deprecated() && !deprecated_rule_ids.contains(&rule_id) {
+                deprecated_rule_ids.push(rule_id);
+            }
+        }
+        deprecated_rule_ids
+    }
+
     /// # Returns
     ///
     /// The rules the selector names: its rule, or every rule of its set that isn't deprecated, in
@@ -181,6 +196,14 @@ impl FromStr for RuleSelector {
             .ok_or_else(|| InvalidRuleSelector::Unknown {
                 text: text.to_owned(),
             })
+    }
+}
+
+impl TryFrom<String> for RuleSelector {
+    type Error = InvalidRuleSelector;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        text.parse()
     }
 }
 
@@ -250,7 +273,7 @@ impl Rule {
     /// # Returns
     ///
     /// The rule `rule_id`, with the settings of `config`.
-    pub const fn new(rule_id: RuleId, config: &LintConfig) -> Self {
+    pub const fn new(rule_id: RuleId, config: &CheckConfig) -> Self {
         match rule_id {
             RuleId::CommentGreedyWrap => {
                 Self::CommentGreedyWrap(greedy_wrap::Checker::new(config.width))

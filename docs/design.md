@@ -4,7 +4,8 @@ This document is for maintainers. It describes how `yscope-linter` is built: its
 modules, and the models behind its rules. What the tool checks and how to use it are documented for
 users elsewhere:
 
-* [`README.md`](../README.md): installation, the command line, output and exit codes, and CI use.
+* [`README.md`](../README.md): installation, the command line, output and exit codes, the cargo
+  integration and its settings, and CI use.
 * [`docs/rules/README.md`](rules/README.md): the rule index, with the codes, the naming standard and
   the deprecation policy.
 * [`docs/rules/comment-greedy-wrap.md`](rules/comment-greedy-wrap.md): the comment rule, with its
@@ -27,6 +28,10 @@ specification.
   * [Code conventions](#code-conventions)
   * [Dependencies](#dependencies)
 * [Pipeline](#pipeline)
+* [Cargo mode](#cargo-mode)
+  * [Workspace discovery](#workspace-discovery)
+  * [Package files](#package-files)
+  * [Settings](#settings)
 * [FileContext](#filecontext)
 * [Rule registry](#rule-registry)
   * [Codes and selectors](#codes-and-selectors)
@@ -97,19 +102,26 @@ Non-goals:
 
 ## Architecture
 
-The crate is one binary, edition 2024, with no library target. Integration tests drive the built
-binary, so nothing needs a public library surface.
+The package is a library with two thin binaries, edition 2024. The library holds the whole tool, and
+its only public items are the two entry points, `main` and `cargo_main`. The `yscope-linter` binary
+calls `main`, and the `cargo-yscope-linter` binary, which cargo runs for `cargo yscope-linter`,
+calls `cargo_main`. Integration tests drive the built binaries, so nothing else needs a public
+library surface.
 
 ### Module layout
 
 Entry and configuration:
 
-* `src/main.rs`: module declarations, the CLI entry, printing, and the exit-code mapping.
-* `src/cli.rs`: the `clap` derive struct and its conversion into a validated `LintConfig`.
-* `src/config.rs`: `LintConfig`, with the enabled `RuleSet`, the `Width`, `include_tests`, the
-  targets, the diff input, the excludes and the `OutputFormat`.
-* `src/error.rs`: the fatal `Error` enum (I/O, invalid arguments, invalid diff), with a hand-written
-  `Display` and `Error`.
+* `src/lib.rs`: module declarations, the two entry points, printing, and the exit-code mapping.
+* `src/main.rs` and `src/bin/cargo-yscope-linter.rs`: the binaries, each one call to an entry point.
+* `src/cli.rs`: the `clap` derive types of both command lines, which share `LintOptions`, and their
+  conversion into a validated `LintConfig` or `CargoConfig`.
+* `src/config.rs`: `LintConfig`, with the `CheckConfig`, the targets, the diff input, the excludes
+  and the `OutputFormat`; `CargoConfig`, with the manifest path, the `PackageSelection`, the
+  command-line `Settings`, the diff input and the `OutputFormat`; and `CheckConfig`, the enabled
+  `RuleSet`, the `Width` and `include_tests` that the rules check a file with.
+* `src/error.rs`: the fatal `Error` enum (I/O, invalid arguments, invalid diff, cargo failures,
+  invalid settings, unknown packages), with a hand-written `Display` and `Error`.
 
 Input selection:
 
@@ -117,6 +129,9 @@ Input selection:
   per-file `LineFilter`.
 * `src/line_ranges.rs`: `LineSpan` and `LineRanges`, with parsing, union and intersection.
 * `src/diff.rs`: a unified diff to per-file `LineRanges`.
+* `src/cargo/`: the [cargo mode](#cargo-mode). `metadata.rs` runs `cargo metadata` and selects the
+  packages, `settings.rs` parses and merges the `Settings`, and `plan.rs` builds the `Plan`: the
+  files of each selected package, with its settings.
 
 Per-file core:
 
@@ -164,14 +179,15 @@ Rules:
 
 Tests:
 
-* `tests/cli.rs`: end-to-end tests of the binary.
+* `tests/cli.rs` and `tests/cargo.rs`: end-to-end tests of the two binaries, with the helpers they
+  share in `tests/support/`.
 
 ### Code conventions
 
 * `mod.rs` files are tables of contents: declarations and named re-exports only.
 * Items inside private modules use plain `pub`. `clippy::nursery` is on, and its
-  `redundant_pub_crate` lint rejects `pub(crate)` there. All modules stay private in `main.rs`, so
-  nothing escapes the crate.
+  `redundant_pub_crate` lint rejects `pub(crate)` there. All modules stay private in `lib.rs`, so
+  nothing but the entry points escapes the crate.
 * Unit tests live next to the code, in `#[cfg(test)] mod tests`.
 * There are no tuple structs, including newtypes. `Width` is `struct Width { columns: NonZeroUsize
   }`.
@@ -187,24 +203,43 @@ Tests:
   outside a proc macro.
 * `quote`, for `ToTokens`, which turns an item back into the tokens whose spans give the lines of an
   `allow-item` item.
+* `serde` with `derive`, and `serde_json`, to read the output of `cargo metadata` and the
+  `metadata.yscope-linter` tables in it. `serde_derive` uses the same `syn` as the tool, so the two
+  add only `serde_core`, `itoa`, `memchr` and `zmij` besides themselves.
 * `syn` with `default-features = false` and `full`, `parsing`, `printing` and `visit`. The body
   scanner never clones syntax, so `clone-impls` isn't needed.
 
-There is no `regex`, `walkdir`, `thiserror` or `anyhow`. The error enum is small enough to write by
-hand, and `std::fs::read_dir` is enough for the walk.
+There is no `regex`, `walkdir`, `thiserror`, `anyhow`, `cargo_metadata` or `toml`. The error enum is
+small enough to write by hand, and `std::fs::read_dir` is enough for the walk. `cargo_metadata`
+would add `camino`, `cargo-platform`, `semver` and `thiserror` to model fields the tool never reads,
+and the settings would still need `serde`. `cargo metadata` already turns the `metadata` tables of
+every `Cargo.toml` into JSON, so no TOML parser is needed either.
+
+Adding `serde_json` made `assert_eq!(vec, [])` ambiguous in tests, since it implements
+`PartialEq<Value>` for the primitive types; such assertions name the element type, as in
+`Vec::<usize>::new()`.
 
 ## Pipeline
 
-`driver::run` performs one run:
+`driver::run` performs one `yscope-linter` run:
 
 1. With `--diff`, it reads the diff (a file, or stdin for `-`) and parses it into per-file
    `LineRanges`.
 2. `source::discover` merges the positional targets, the diff's files and the excludes into a sorted
    list of `SourceFile`s, each with a `LineFilter`.
-3. For each file, it reads the source. A read failure is a fatal `Error`.
-4. It skips a file that `source::is_generated` marks, and counts it separately.
-5. It runs `FileChecker::check` on every other file.
-6. It sorts and deduplicates the diagnostics of all files.
+3. It passes the files to `driver::check` as one `FileGroup`, with the `CheckConfig` of the command
+   line.
+
+A `cargo yscope-linter` run builds its `FileGroup`s with `cargo::Plan::new`, one per selected
+package, as [Cargo mode](#cargo-mode) describes, and passes them to `driver::check`.
+
+`driver::check` checks the files of each group with a `FileChecker` built from the group's
+`CheckConfig`:
+
+1. For each file, it reads the source. A read failure is a fatal `Error`.
+2. It skips a file that `source::is_generated` marks, and counts it separately.
+3. It runs `FileChecker::check` on every other file.
+4. It sorts and deduplicates the diagnostics of all files.
 
 `FileChecker::check` handles one file:
 
@@ -219,6 +254,87 @@ hand, and `std::fs::read_dir` is enough for the walk.
 diagnostics, checked files and skipped generated files. A fatal `Error` stops the run before
 anything is printed to stdout and exits with 2. Otherwise the exit code is 1 when there is at least
 one diagnostic, including a meta diagnostic, and 0 when there is none.
+
+## Cargo mode
+
+`cargo yscope-linter` replaces the targets of a `yscope-linter` run with the files of a cargo
+workspace's packages, and lets each package set its own `CheckConfig`. Everything from
+`driver::check` on is shared with the path mode.
+
+Cargo runs a subcommand `cargo-<name>` with `<name>` as its first argument, so `cli::CargoCli` is a
+`clap` enum with the single subcommand `yscope-linter`, named `cargo` for the usage line. Running
+the binary without that first argument is a usage error.
+
+### Workspace discovery
+
+`metadata::Workspace::load` runs `cargo metadata --no-deps --format-version 1`, with
+`--manifest-path` when it is given. It runs the cargo that `$CARGO` names, which cargo sets for its
+subcommands, so the same toolchain answers, and `cargo` otherwise. Cargo's stderr is inherited, so
+its errors and warnings reach the user as cargo prints them. `--no-deps` keeps the call offline and
+fast, and makes `packages` the workspace members.
+
+The tool reads only `packages` (each `name`, `id`, `manifest_path` and `metadata`),
+`workspace_default_members`, `workspace_root`, `target_directory` and the workspace `metadata`.
+These types don't deny unknown fields, since cargo adds fields over time.
+
+`Workspace::select` maps the `PackageSelection` to members:
+
+* `Default` takes `workspace_default_members`. Cargo computes it for the selected manifest with the
+  same rules as its own commands, so the tool doesn't reimplement them: a member's manifest selects
+  that member, and the root manifest selects `default-members`, the root package, or every member of
+  a virtual workspace.
+* `Packages` takes the members that `-p` names, by package name. Cargo's package ID specs and globs
+  aren't supported.
+* `Workspace` takes every member but the ones `--exclude-package` names. `--workspace` takes
+  precedence over `-p`, as in cargo.
+* A name that matches no member is `Error::PackageNotFound`.
+
+### Package files
+
+`Plan::new` turns each selected package into a `FileGroup`:
+
+* Paths are made absolute against the current directory and resolved lexically (`resolve`), so that
+  the excludes, the target directory, the package directories and the diff's paths compare component
+  by component.
+* The package directory is walked with `source::walk_directory`, which skips what a directory target
+  skips, plus the directories that the plan rejects: the workspace's target directory, which can be
+  inside a package under any name (`CARGO_TARGET_DIR=out`), and every directory with its own
+  `Cargo.toml`. The latter is how cargo bounds a package's files too. It keeps a nested member from
+  being linted twice, and keeps a nested non-member, such as a test fixture crate, out entirely.
+* A file under any exclude of the package's merged settings is dropped.
+* With `--diff`, a file is kept only if the diff changes it, with those lines as its
+  `LineFilter::Ranges`. The diff's files outside the selected packages are ignored.
+* Each path is made relative to the current directory for output (`relative_to`), with `..`
+  components when the package is outside it.
+
+The whole package directory is walked rather than the targets' `src_path` directories, so that the
+result equals a path-mode run on the package directories. A file that no target compiles, such as a
+stray `.rs` file in a package, is linted as well.
+
+### Settings
+
+`settings::Settings` holds the settings that one source gives, each `None` when the source leaves it
+unset: `rule_selectors`, `width`, `include_tests`, and the `excludes`, which are always a list.
+
+* `Settings::from_table` parses a `metadata.yscope-linter` table into `RawSettings`, a serde struct
+  with `deny_unknown_fields` and kebab-case keys. The table is first kept as a `serde_json::Value`
+  in `MetadataTable`, so that its errors are wrapped into `Error::InvalidSettings` with the table
+  and the manifest named. A JSON position in the whole `cargo metadata` output wouldn't help the
+  user. The other keys of `metadata` belong to other tools and are ignored.
+* `rules` parses through `RuleSelector`'s `try_from = "String"`, with the same messages as `--rule`.
+* `width` is a `NonZeroUsize`, so 0 is rejected while parsing.
+* `rebased` joins relative excludes to the directory they are relative to: the workspace root, the
+  package directory, or the current directory for the command line.
+* `overridden_by` keeps each setting of the overriding source when it is set, and appends the
+  excludes. `Plan::new` folds the workspace's settings, the package's and the command line's in that
+  order, and `check_config` fills the unset ones with the defaults: every rule, `Width::DEFAULT` and
+  no test code.
+
+The command line's `--include-tests` is a flag, so it is `Some(true)` or `None`: it can turn test
+checking on over a setting, but not off.
+
+The path mode never reads `Cargo.toml`. Its `Cli::into_config` builds its `CheckConfig` through
+`Settings::check_config` too, so the defaults live in one place.
 
 ## FileContext
 
@@ -1865,7 +1981,18 @@ fn or comment it belonged to, and the anchor spans cover the rest.
 * `tests/cli.rs` runs the built binary (`CARGO_BIN_EXE_yscope-linter`) on files each test writes
   under `CARGO_TARGET_TMPDIR`. It covers the output format and order, exit codes, the directory
   walk, `@generated` skipping, `--rule`, `--exclude`, `--diff -`, `--format github` and `--version`.
-* The repository lints itself with `yscope-linter src tests`, which must be clean.
+* `cargo/metadata.rs` tests the package selection on hand-written `cargo metadata` output, and
+  `cargo/settings.rs` the parsing, the error context and the precedence of the settings.
+* `tests/cargo.rs` runs `CARGO_BIN_EXE_cargo-yscope-linter` with cargo's `yscope-linter` first
+  argument on cargo workspaces that each test writes, so the real `cargo metadata` answers. It
+  covers the default selection from the root and from a member, `-p`, `--workspace` and
+  `--exclude-package`, a single package's targets and a custom target directory, the files outside
+  every package and in nested packages, the settings' precedence and relative excludes,
+  `include-tests`, `--diff` limited to the selected packages, relative paths in the GitHub format,
+  and the fatal errors: a failing `cargo metadata`, a missing cargo, an invalid setting and an
+  unknown package.
+* The repository lints itself with `yscope-linter src tests` and with
+  `cargo yscope-linter --include-tests`, which must both be clean.
 
 Before a release, run the tool on current y-scope/clp and y-scope/spider and triage every finding as
 a true positive, a false positive (fix the tool, or add it to [Known limits](#known-limits)), or a
@@ -1967,6 +2094,15 @@ Input:
 
 * Quoted paths in `--diff` input (names with spaces or non-ASCII bytes) are an invalid argument.
 
+Cargo mode:
+
+* A target whose source file is outside its package directory (`[lib] path = "../shared/lib.rs"`)
+  isn't linted.
+* `.gitignore` isn't read. A package directory's untracked `.rs` files are linted, so a workspace
+  whose root is also a package lints every untracked file under the root that isn't in another
+  package, the target directory or a hidden directory.
+* `-p` takes a package name only, not a package ID spec (`name@version`) or a glob.
+
 ## Rejected alternatives
 
 * Keeping a trailing-`:` boundary, everywhere or in plain `//` comments only. The boundary would
@@ -2020,6 +2156,17 @@ Input:
   the gain is small.
 * A `--targets-from` input beside `--diff`. `--diff` covers CI, including pure deletions, and
   `FILE:RANGES` targets cover ad hoc use.
+* Positional targets in cargo mode, intersected with the packages' files. The path mode already
+  lints given files, and the intersection would have to define which package's settings a file
+  outside every package gets. `--diff` is the narrowing that CI needs.
+* Naming the package exclusion `--exclude`, as cargo does. It would change the meaning of the
+  existing `--exclude <PATH>` between the two binaries.
+* Warning, as cargo does, about an `--exclude-package` name that matches no member. A typo would
+  then lint the package it meant to skip, with only a warning that CI doesn't fail on.
+* Overriding excludes by precedence, like the other settings. A package that excludes its generated
+  module would then drop the workspace's excludes, which can point into any package.
+* Reading `Cargo.toml` settings in the path mode. A path target has no package, and a file's nearest
+  `Cargo.toml` isn't necessarily its package's, so the path mode stays free of cargo.
 
 ## Open questions
 

@@ -10,8 +10,8 @@
 * A `# Parameters` section documents every parameter of a trait method declaration, and appears
   nowhere else.
 
-It reads the source only, without building the crate, so it can lint a whole repository or only the
-lines a pull request changes.
+It reads the source only, without building the crate, so it can lint a whole repository, the
+packages of a cargo workspace, or only the lines a pull request changes.
 
 ## Rules
 
@@ -38,6 +38,12 @@ The design and the internals are in [`docs/design.md`](docs/design.md).
 ```text
 cargo install --locked --git https://github.com/y-scope/yscope-linter yscope-linter
 ```
+
+This installs two binaries:
+
+* `yscope-linter`, which lints the files and directories it is given. See [Usage](#usage).
+* `cargo-yscope-linter`, which cargo runs for `cargo yscope-linter` to lint the packages of a cargo
+  workspace. See [Cargo integration](#cargo-integration).
 
 ## Usage
 
@@ -101,6 +107,85 @@ Exit codes:
 * `1`: at least one diagnostic.
 * `2`: a usage error, an invalid target or diff, or an I/O failure. Nothing is printed to stdout.
 
+`yscope-linter` doesn't read `Cargo.toml`, so the settings of
+[Cargo integration](#cargo-integration) don't apply to it.
+
+## Cargo integration
+
+```text
+cargo yscope-linter [OPTIONS]
+```
+
+`cargo yscope-linter` lints the packages of a cargo workspace. It finds them with `cargo metadata`,
+so it lints the workspace members' files and nothing else in the repository, and it reads its
+settings from their `Cargo.toml` files.
+
+It takes the options of `yscope-linter`, which keep their meaning, and cargo's package selection
+options, but no `TARGET`:
+
+| Argument                   | Meaning                                                                     |
+| -------------------------- | --------------------------------------------------------------------------- |
+| `--manifest-path <PATH>`   | The `Cargo.toml` of the workspace or package. Default: found as cargo does. |
+| `-p`, `--package <NAME>`   | Lint only this workspace member. Repeatable.                                |
+| `--workspace`              | Lint every workspace member. It takes precedence over `-p`, as in cargo.    |
+| `--exclude-package <NAME>` | With `--workspace`, skip this member. Repeatable.                           |
+
+* Without `-p` or `--workspace`, the packages are the ones cargo selects for the manifest:
+  * The manifest's package, if the manifest isn't the workspace root.
+  * Else the workspace's `default-members`, if it sets them.
+  * Else the root package, or every member of a virtual workspace.
+* `--exclude-package` is named so to keep `--exclude <PATH>` for paths. Unlike cargo, which only
+  warns, an unknown name in `-p` or `--exclude-package` is an error.
+* Each selected package's directory is walked for `.rs` files as a directory `TARGET` is, so all its
+  targets are linted: the library, binaries, tests, examples, benches and the build script. The walk
+  also skips the workspace's target directory, and the directories with their own `Cargo.toml`,
+  which hold other packages. A nested workspace member is linted once, as its own package, if it is
+  selected.
+* `--exclude <PATH>` and the paths of the diagnostics are relative to the current directory.
+* With `--diff`, only the changed files of the selected packages are linted.
+* A `TARGET` is a usage error. To lint some files only, run `yscope-linter` on them, or use
+  `--diff`.
+
+### Settings
+
+A workspace and each package can set defaults for the options in their `Cargo.toml`:
+
+```toml
+[workspace.metadata.yscope-linter]
+width = 100
+include-tests = true
+exclude = ["components/proto/src/generated"]
+rules = ["DOC", "symbol-order"]
+
+[package.metadata.yscope-linter]
+width = 80
+```
+
+| Key             | Type              | Meaning                                                                                |
+| --------------- | ----------------- | -------------------------------------------------------------------------------------- |
+| `width`         | positive integer  | As `--width`.                                                                          |
+| `include-tests` | boolean           | As `--include-tests`.                                                                  |
+| `exclude`       | array of paths    | As `--exclude`, with paths relative to the directory of the `Cargo.toml` that sets it. |
+| `rules`         | array of rule IDs | As `--rule`: names, codes or sets. An empty array enables no rule.                     |
+
+* The `[workspace.metadata.yscope-linter]` table is read from the workspace root's `Cargo.toml`. A
+  package's `[package.metadata.yscope-linter]` table applies to that package's files only.
+* Each option comes from the first of the command line, the package's table and the workspace's
+  table that sets it, and else from the default. `--include-tests` can only turn the setting on.
+* Excludes add up: the command line's, the package's and the workspace's all apply.
+* An unknown key, a value of the wrong type, and an unknown rule are errors that name the table and
+  its `Cargo.toml`. The other keys of `[workspace.metadata]` and `[package.metadata]` belong to
+  other tools and are ignored.
+
+### Errors
+
+These are fatal errors, with exit code `2` and nothing printed to stdout:
+
+* Cargo can't be run. The subcommand runs the cargo that `$CARGO` names, as cargo sets it, or else
+  `cargo`.
+* `cargo metadata` fails. Its own error is printed to stderr first.
+* An invalid setting, or an unknown package name.
+
 ## Using it in CI
 
 To lint only the lines a branch changes, pipe a zero-context diff into `--diff -` from the
@@ -114,6 +199,12 @@ On GitHub Actions, `--format github` turns each diagnostic into an annotation on
 
 ```text
 git diff -U0 origin/main -- '*.rs' | yscope-linter --diff - --format github
+```
+
+To lint only the changed lines of a cargo workspace's packages, with their `Cargo.toml` settings:
+
+```text
+git diff -U0 origin/main -- '*.rs' | cargo yscope-linter --workspace --diff - --format github
 ```
 
 * The diff's `+++` paths must have the `b/` prefix. If your Git config changes the prefixes, add

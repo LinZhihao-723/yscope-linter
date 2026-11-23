@@ -3,11 +3,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::config::DiffInput;
+use crate::config::CheckConfig;
 use crate::config::LintConfig;
 use crate::config::RuleSet;
 use crate::diagnostic::Diagnostic;
@@ -20,6 +19,7 @@ use crate::rules::Rule;
 use crate::rules::RuleId;
 use crate::source;
 use crate::source::LineFilter;
+use crate::source::SourceFile;
 use crate::syntax::test_code::TestModuleCache;
 
 /// The outcome of a lint run.
@@ -35,8 +35,41 @@ pub struct Report {
     pub num_generated_files: usize,
 }
 
-/// Runs the lint over every file the configuration selects, skipping the files marked `@generated`
-/// in their first five lines.
+/// Files that the rules check with the same settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileGroup {
+    pub check_config: CheckConfig,
+    pub source_files: Vec<SourceFile>,
+}
+
+/// Runs the lint over every file the configuration of a `yscope-linter` run selects.
+///
+/// # Returns
+///
+/// The report of [`check`] on success.
+///
+/// # Errors
+///
+/// Returns an error if:
+///
+/// * Forwards [`crate::config::DiffInput::read`]'s return values on failure.
+/// * Forwards [`diff::parse`]'s return values on failure.
+/// * Forwards [`source::discover`]'s return values on failure.
+/// * Forwards [`check`]'s return values on failure.
+pub fn run(config: LintConfig) -> Result<Report, Error> {
+    let diff_ranges: BTreeMap<PathBuf, LineRanges> = match &config.diff_input {
+        Some(diff_input) => diff::parse(&diff_input.read()?)?,
+        None => BTreeMap::new(),
+    };
+    let source_files = source::discover(config.targets, diff_ranges, &config.excludes)?;
+    check(vec![FileGroup {
+        check_config: config.check_config,
+        source_files,
+    }])
+}
+
+/// Checks the files of every group with the group's settings, skipping the files marked
+/// `@generated` in their first five lines.
 ///
 /// # Returns
 ///
@@ -47,42 +80,38 @@ pub struct Report {
 /// Returns an error if:
 ///
 /// * [`Error::Io`] if a source file can't be read.
-/// * Forwards [`read_diff_input`]'s return values on failure.
-/// * Forwards [`diff::parse`]'s return values on failure.
-/// * Forwards [`source::discover`]'s return values on failure.
-pub fn run(config: LintConfig) -> Result<Report, Error> {
-    let diff_ranges: BTreeMap<PathBuf, LineRanges> = match &config.diff_input {
-        Some(diff_input) => diff::parse(&read_diff_input(diff_input)?)?,
-        None => BTreeMap::new(),
-    };
-    let mut file_checker = FileChecker::new(&config);
-    let source_files = source::discover(config.targets, diff_ranges, &config.excludes)?;
-
+pub fn check(file_groups: Vec<FileGroup>) -> Result<Report, Error> {
     let mut diagnostics = Vec::new();
+    let mut num_files_checked = 0;
     let mut num_generated_files = 0;
-    for source_file in &source_files {
-        let source_text = fs::read_to_string(&source_file.path).map_err(|source| Error::Io {
-            path: source_file.path.clone(),
-            source,
-        })?;
-        if source::is_generated(&source_text) {
-            num_generated_files += 1;
-            continue;
-        }
-        diagnostics.extend(
-            file_checker
-                .check(&source_file.path, &source_text, &source_file.line_filter)
-                .into_iter()
-                .map(|diagnostic| FileDiagnostic {
+    for file_group in file_groups {
+        let mut file_checker = FileChecker::new(&file_group.check_config);
+        for source_file in &file_group.source_files {
+            let source_text =
+                fs::read_to_string(&source_file.path).map_err(|source| Error::Io {
                     path: source_file.path.clone(),
-                    diagnostic,
-                }),
-        );
+                    source,
+                })?;
+            if source::is_generated(&source_text) {
+                num_generated_files += 1;
+                continue;
+            }
+            num_files_checked += 1;
+            diagnostics.extend(
+                file_checker
+                    .check(&source_file.path, &source_text, &source_file.line_filter)
+                    .into_iter()
+                    .map(|diagnostic| FileDiagnostic {
+                        path: source_file.path.clone(),
+                        diagnostic,
+                    }),
+            );
+        }
     }
     FileDiagnostic::sort_and_dedup(&mut diagnostics);
     Ok(Report {
         diagnostics,
-        num_files_checked: source_files.len() - num_generated_files,
+        num_files_checked,
         num_generated_files,
     })
 }
@@ -102,14 +131,14 @@ impl FileChecker {
     ///
     /// # Returns
     ///
-    /// A checker with the rules and settings of `config`.
-    fn new(config: &LintConfig) -> Self {
+    /// A checker with the rules and settings of `check_config`.
+    fn new(check_config: &CheckConfig) -> Self {
         Self {
-            rule_set: config.rule_set.clone(),
+            rule_set: check_config.rule_set.clone(),
             rules: RuleId::ALL
                 .into_iter()
-                .filter(|rule_id| config.rule_set.contains(*rule_id))
-                .map(|rule_id| Rule::new(rule_id, config))
+                .filter(|rule_id| check_config.rule_set.contains(*rule_id))
+                .map(|rule_id| Rule::new(rule_id, check_config))
                 .collect(),
             test_module_cache: TestModuleCache::default(),
         }
@@ -150,34 +179,6 @@ impl FileChecker {
     }
 }
 
-/// Reads the whole diff text.
-///
-/// # Returns
-///
-/// The diff text on success.
-///
-/// # Errors
-///
-/// Returns an error if:
-///
-/// * [`Error::ReadStdin`] if the standard input can't be read.
-/// * [`Error::Io`] if the diff file can't be read.
-fn read_diff_input(diff_input: &DiffInput) -> Result<String, Error> {
-    match diff_input {
-        DiffInput::Stdin => {
-            let mut diff_text = String::new();
-            std::io::stdin()
-                .read_to_string(&mut diff_text)
-                .map_err(|source| Error::ReadStdin { source })?;
-            Ok(diff_text)
-        }
-        DiffInput::File { path } => fs::read_to_string(path).map_err(|source| Error::Io {
-            path: path.clone(),
-            source,
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,16 +187,11 @@ mod tests {
     use crate::diagnostic::DiagnosticKind;
 
     fn file_checker(rule_set: RuleSet) -> FileChecker {
-        let config = LintConfig {
+        FileChecker::new(&CheckConfig {
             rule_set,
-            width: Width::new(std::num::NonZeroUsize::new(100).expect("non-zero")),
+            width: Width::DEFAULT,
             include_tests: false,
-            format: OutputFormat::Text,
-            targets: Vec::new(),
-            diff_input: None,
-            excludes: Vec::new(),
-        };
-        FileChecker::new(&config)
+        })
     }
 
     fn rendered(diagnostics: Vec<Diagnostic>) -> Vec<String> {

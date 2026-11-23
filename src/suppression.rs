@@ -1258,7 +1258,7 @@ mod tests {
         );
         assert_eq!(
             covered_lines(&source_text, RuleId::CommentGreedyWrap, 8),
-            []
+            Vec::<usize>::new()
         );
     }
 
@@ -1399,7 +1399,10 @@ mod tests {
                     .to_owned()
             )]
         );
-        assert_eq!(covered_lines(&source_text, RuleId::ErrorsDoc, 3), []);
+        assert_eq!(
+            covered_lines(&source_text, RuleId::ErrorsDoc, 3),
+            Vec::<usize>::new()
+        );
     }
 
     #[test]
@@ -1457,7 +1460,7 @@ mod tests {
         );
         assert_eq!(
             covered_lines(&source_text, RuleId::CommentGreedyWrap, 3),
-            []
+            Vec::<usize>::new()
         );
     }
 

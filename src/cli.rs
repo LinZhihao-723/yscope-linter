@@ -1,4 +1,5 @@
-//! The command-line interface and its conversion into a [`LintConfig`].
+//! The command-line interfaces of `yscope-linter` and `cargo yscope-linter`, and their conversion
+//! into a [`LintConfig`] and a [`CargoConfig`].
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -6,13 +7,14 @@ use std::str::FromStr;
 
 use clap::Parser;
 
+use crate::cargo::Settings;
+use crate::config::CargoConfig;
 use crate::config::DiffInput;
 use crate::config::LintConfig;
 use crate::config::OutputFormat;
-use crate::config::RuleSet;
+use crate::config::PackageSelection;
 use crate::config::Width;
 use crate::error::Error;
-use crate::rules::RuleId;
 use crate::rules::RuleSelector;
 use crate::source::TargetSpec;
 
@@ -24,30 +26,8 @@ pub struct Cli {
     #[arg(value_name = "TARGET", required_unless_present = "diff")]
     targets: Vec<String>,
 
-    /// Enable only this rule: a name, a code (DOC003) or a set (DOC). Repeatable. Default: all
-    /// rules.
-    #[arg(long = "rule", value_name = "ID")]
-    rules: Vec<RuleSelector>,
-
-    /// Fill width for comment-greedy-wrap.
-    #[arg(long, value_name = "N", default_value = "100")]
-    width: NonZeroUsize,
-
-    /// Also check #[test] fns and #[cfg(test)] items, which the syntax-tree rules skip by default.
-    #[arg(long)]
-    include_tests: bool,
-
-    /// Skip this file or directory (path-prefix match by whole components). Repeatable.
-    #[arg(long = "exclude", value_name = "PATH")]
-    excludes: Vec<PathBuf>,
-
-    /// Lint the changed lines of a unified diff (`git diff -U0`); `-` reads stdin.
-    #[arg(long, value_name = "FILE")]
-    diff: Option<PathBuf>,
-
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    format: OutputFormat,
+    #[command(flatten)]
+    lint_options: LintOptions,
 }
 
 impl Cli {
@@ -55,21 +35,7 @@ impl Cli {
     ///
     /// A warning for each deprecated rule that `--rule` names, since it never runs.
     pub fn warnings(&self) -> Vec<String> {
-        let mut deprecated_rule_ids: Vec<RuleId> = Vec::new();
-        for rule_id in self.rules.iter().flat_map(|selector| selector.rule_ids()) {
-            if rule_id.is_deprecated() && !deprecated_rule_ids.contains(&rule_id) {
-                deprecated_rule_ids.push(rule_id);
-            }
-        }
-        deprecated_rule_ids
-            .into_iter()
-            .map(|rule_id| {
-                format!(
-                    "`{rule_id}` ({}) is deprecated and never runs; remove it from `--rule`",
-                    rule_id.code()
-                )
-            })
-            .collect()
+        self.lint_options.warnings()
     }
 
     /// Validates the parsed arguments.
@@ -89,36 +55,172 @@ impl Cli {
             .iter()
             .map(|argument| TargetSpec::from_str(argument))
             .collect::<Result<Vec<_>, _>>()?;
-        let rule_set = if self.rules.is_empty() {
-            RuleSet::all()
-        } else {
-            self.rules
-                .into_iter()
-                .flat_map(RuleSelector::rule_ids)
-                .collect()
+        let LintOptions {
+            rules,
+            width,
+            include_tests,
+            excludes,
+            diff,
+            format,
+        } = self.lint_options;
+        let settings = Settings {
+            rule_selectors: (!rules.is_empty()).then_some(rules),
+            width: width.map(Width::new),
+            include_tests: Some(include_tests),
+            excludes: Vec::new(),
         };
-        let diff_input = self.diff.map(|path| {
-            if path.as_os_str() == "-" {
-                DiffInput::Stdin
-            } else {
-                DiffInput::File { path }
-            }
-        });
         Ok(LintConfig {
-            rule_set,
-            width: Width::new(self.width),
-            include_tests: self.include_tests,
-            format: self.format,
+            check_config: settings.check_config(),
+            format,
             targets,
-            diff_input,
-            excludes: self.excludes,
+            diff_input: diff.map(DiffInput::from_argument),
+            excludes,
         })
+    }
+}
+
+/// Lints a cargo workspace when cargo runs it as `cargo yscope-linter`.
+#[derive(Debug, Parser)]
+#[command(name = "cargo", bin_name = "cargo")]
+pub enum CargoCli {
+    /// Lints the packages of a cargo workspace for the y-scope Rust comment and docstring rules
+    /// that rustfmt and clippy can't check.
+    #[command(name = "yscope-linter", version)]
+    YscopeLinter(CargoArgs),
+}
+
+/// The arguments of `cargo yscope-linter`.
+#[derive(Debug, clap::Args)]
+pub struct CargoArgs {
+    /// Path to the Cargo.toml of the workspace or package to lint.
+    #[arg(long, value_name = "PATH", help_heading = "Package Selection")]
+    manifest_path: Option<PathBuf>,
+
+    /// Lint only this workspace member. Repeatable.
+    #[arg(
+        short,
+        long = "package",
+        value_name = "NAME",
+        help_heading = "Package Selection"
+    )]
+    packages: Vec<String>,
+
+    /// Lint every workspace member.
+    #[arg(long, help_heading = "Package Selection")]
+    workspace: bool,
+
+    /// Skip this workspace member with --workspace. Repeatable.
+    #[arg(
+        long = "exclude-package",
+        value_name = "NAME",
+        requires = "workspace",
+        help_heading = "Package Selection"
+    )]
+    excluded_packages: Vec<String>,
+
+    #[command(flatten)]
+    lint_options: LintOptions,
+}
+
+impl CargoArgs {
+    /// # Returns
+    ///
+    /// A warning for each deprecated rule that `--rule` names, since it never runs.
+    pub fn warnings(&self) -> Vec<String> {
+        self.lint_options.warnings()
+    }
+
+    /// Converts the parsed arguments. `--workspace` takes precedence over `-p`, as it does in
+    /// cargo.
+    ///
+    /// # Returns
+    ///
+    /// The run's configuration.
+    pub fn into_config(self) -> CargoConfig {
+        let package_selection = if self.workspace {
+            PackageSelection::Workspace {
+                excluded_names: self.excluded_packages,
+            }
+        } else if self.packages.is_empty() {
+            PackageSelection::Default
+        } else {
+            PackageSelection::Packages {
+                names: self.packages,
+            }
+        };
+        let LintOptions {
+            rules,
+            width,
+            include_tests,
+            excludes,
+            diff,
+            format,
+        } = self.lint_options;
+        CargoConfig {
+            manifest_path: self.manifest_path,
+            package_selection,
+            overrides: Settings {
+                rule_selectors: (!rules.is_empty()).then_some(rules),
+                width: width.map(Width::new),
+                include_tests: include_tests.then_some(true),
+                excludes,
+            },
+            format,
+            diff_input: diff.map(DiffInput::from_argument),
+        }
+    }
+}
+
+/// The options that both interfaces share.
+#[derive(Debug, clap::Args)]
+struct LintOptions {
+    /// Enable only this rule: a name, a code (DOC003) or a set (DOC). Repeatable. Default: all
+    /// rules.
+    #[arg(long = "rule", value_name = "ID")]
+    rules: Vec<RuleSelector>,
+
+    /// Fill width for comment-greedy-wrap. Default: 100.
+    #[arg(long, value_name = "N")]
+    width: Option<NonZeroUsize>,
+
+    /// Also check #[test] fns and #[cfg(test)] items, which the syntax-tree rules skip by default.
+    #[arg(long)]
+    include_tests: bool,
+
+    /// Skip this file or directory (path-prefix match by whole components). Repeatable.
+    #[arg(long = "exclude", value_name = "PATH")]
+    excludes: Vec<PathBuf>,
+
+    /// Lint the changed lines of a unified diff (`git diff -U0`); `-` reads stdin.
+    #[arg(long, value_name = "FILE")]
+    diff: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+}
+
+impl LintOptions {
+    /// # Returns
+    ///
+    /// A warning for each deprecated rule that `--rule` names, since it never runs.
+    fn warnings(&self) -> Vec<String> {
+        RuleSelector::deprecated_rule_ids(&self.rules)
+            .into_iter()
+            .map(|rule_id| {
+                format!(
+                    "`{rule_id}` ({}) is deprecated and never runs; remove it from `--rule`",
+                    rule_id.code()
+                )
+            })
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::RuleId;
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(std::iter::once("yscope-linter").chain(args.iter().copied()))
@@ -126,7 +228,11 @@ mod tests {
     }
 
     fn enabled_rules(cli: Cli) -> Vec<RuleId> {
-        let rule_set = cli.into_config().expect("valid config").rule_set;
+        let rule_set = cli
+            .into_config()
+            .expect("valid config")
+            .check_config
+            .rule_set;
         RuleId::ALL
             .into_iter()
             .filter(|rule_id| rule_set.contains(*rule_id))

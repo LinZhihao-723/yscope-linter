@@ -366,7 +366,10 @@ mod tests {
 
     #[test]
     fn blank_line_ends_the_paragraph() {
-        assert_eq!(joinable_lines("/// First.\n///\n/// Second.\n"), []);
+        assert_eq!(
+            joinable_lines("/// First.\n///\n/// Second.\n"),
+            Vec::<usize>::new()
+        );
         assert_eq!(
             joinable_lines("/// First.\n///\n/// Second\n/// wraps.\n"),
             [3]
@@ -375,8 +378,14 @@ mod tests {
 
     #[test]
     fn header_is_never_joined_with_its_neighbors() {
-        assert_eq!(joinable_lines("/// Summary.\n/// # Errors\n"), []);
-        assert_eq!(joinable_lines("/// # Returns\n/// A new sender.\n"), []);
+        assert_eq!(
+            joinable_lines("/// Summary.\n/// # Errors\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            joinable_lines("/// # Returns\n/// A new sender.\n"),
+            Vec::<usize>::new()
+        );
         assert_eq!(
             joinable_lines("/// # Returns\n///\n/// A new\n/// sender.\n"),
             [3]
@@ -385,8 +394,14 @@ mod tests {
 
     #[test]
     fn following_bullet_starts_a_new_paragraph() {
-        assert_eq!(joinable_lines("/// * First.\n/// * Second.\n"), []);
-        assert_eq!(joinable_lines("/// Intro\n/// * First.\n"), []);
+        assert_eq!(
+            joinable_lines("/// * First.\n/// * Second.\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            joinable_lines("/// Intro\n/// * First.\n"),
+            Vec::<usize>::new()
+        );
     }
 
     #[test]
@@ -397,7 +412,7 @@ mod tests {
         );
         assert_eq!(
             joinable_lines("/// * A bullet.\n/// A new paragraph.\n"),
-            []
+            Vec::<usize>::new()
         );
         assert_eq!(joinable_lines("/// 1. Item\n///    wraps.\n"), [1]);
         assert_eq!(
@@ -408,42 +423,69 @@ mod tests {
 
     #[test]
     fn line_at_another_indent_than_the_paragraph_continuation_is_not_joinable() {
-        assert_eq!(joinable_lines("// Text\n//   indented\n"), []);
-        assert_eq!(joinable_lines("/// * Item\n///     deeper\n"), []);
+        assert_eq!(
+            joinable_lines("// Text\n//   indented\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            joinable_lines("/// * Item\n///     deeper\n"),
+            Vec::<usize>::new()
+        );
         assert_eq!(joinable_lines("/// * Item\n///   wraps\n/// out.\n"), [1]);
     }
 
     #[test]
     fn table_rows_and_block_quotes_are_not_joinable() {
-        assert_eq!(joinable_lines("/// | a | b |\n/// | - | - |\n"), []);
-        assert_eq!(joinable_lines("/// | a | b |\n/// Text.\n"), []);
-        assert_eq!(joinable_lines("/// > quote\n/// > more\n"), []);
+        assert_eq!(
+            joinable_lines("/// | a | b |\n/// | - | - |\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            joinable_lines("/// | a | b |\n/// Text.\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            joinable_lines("/// > quote\n/// > more\n"),
+            Vec::<usize>::new()
+        );
         assert_eq!(joinable_lines("/// a | b |\n/// c | d |\n"), [1]);
     }
 
     #[test]
     fn change_of_marker_or_marker_column_ends_the_paragraph() {
-        assert_eq!(joinable_lines("// A plain\n/// doc.\n"), []);
-        assert_eq!(joinable_lines("    // Four\n        // eight.\n"), []);
+        assert_eq!(
+            joinable_lines("// A plain\n/// doc.\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            joinable_lines("    // Four\n        // eight.\n"),
+            Vec::<usize>::new()
+        );
         assert_eq!(joinable_lines("    // Four\n    // four.\n"), [1]);
     }
 
     #[test]
     fn trailing_comments_belong_to_no_block() {
-        assert_eq!(joinable_lines("let a = 1; // short\n// A comment.\n"), []);
-        assert_eq!(joinable_lines("// A comment\nlet a = 1; // short\n"), []);
+        assert_eq!(
+            joinable_lines("let a = 1; // short\n// A comment.\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            joinable_lines("// A comment\nlet a = 1; // short\n"),
+            Vec::<usize>::new()
+        );
         assert_eq!(joinable_lines("// short\n// A comment.\n"), [1]);
     }
 
     #[test]
     fn link_reference_definition_and_its_target_are_not_joinable() {
         let source_text = "/// See [`Foo::bar`].\n/// [`Foo::bar`]:\n///   crate::foo::Foo::bar\n";
-        assert_eq!(joinable_lines(source_text), []);
+        assert_eq!(joinable_lines(source_text), Vec::<usize>::new());
         let source_text =
             "/// [`Foo::bar`]:\n///   crate::foo::Foo::bar\n/// Next\n/// paragraph.\n";
         assert_eq!(joinable_lines(source_text), [3]);
         let in_list_item = "/// * Item.\n/// [`a`]:\n///   https://example.com\n///   \"Title\"\n";
-        assert_eq!(joinable_lines(in_list_item), []);
+        assert_eq!(joinable_lines(in_list_item), Vec::<usize>::new());
     }
 
     #[test]
@@ -451,9 +493,9 @@ mod tests {
         let loose_item = "/// * Item.\n///\n///   Second paragraph\n///   of the item.\n";
         assert_eq!(joinable_lines(loose_item), [3]);
         let preformatted = "// Cases:\n//\n//   index 0: alive\n//   index 1: dead\n";
-        assert_eq!(joinable_lines(preformatted), []);
+        assert_eq!(joinable_lines(preformatted), Vec::<usize>::new());
         let after_header = "/// * Item.\n/// # Header\n///\n///   indented\n///   text\n";
-        assert_eq!(joinable_lines(after_header), []);
+        assert_eq!(joinable_lines(after_header), Vec::<usize>::new());
         let after_preformatted = "//   aligned\n// Then\n// prose.\n";
         assert_eq!(joinable_lines(after_preformatted), [2]);
     }
@@ -467,16 +509,19 @@ mod tests {
     #[test]
     fn formula_lines_are_never_joined_with_their_neighbors() {
         let formulas = "// soft_timeout_ddl = registered_at + 100ms\n// deadline = now - 900ms\n";
-        assert_eq!(joinable_lines(formulas), []);
+        assert_eq!(joinable_lines(formulas), Vec::<usize>::new());
         let after_colon = "// Validate fan-out case:\n// task_5.output_1 -> task_6.input_0\n";
-        assert_eq!(joinable_lines(after_colon), []);
+        assert_eq!(joinable_lines(after_colon), Vec::<usize>::new());
         assert_eq!(joinable_lines("// x = 1\n// Then\n// prose.\n"), [2]);
         assert_eq!(joinable_lines("// total number = a +\n// b\n"), [1]);
     }
 
     #[test]
     fn tagged_line_starts_a_new_paragraph() {
-        assert_eq!(joinable_lines("// Write outputs\n// NOTE: one type.\n"), []);
+        assert_eq!(
+            joinable_lines("// Write outputs\n// NOTE: one type.\n"),
+            Vec::<usize>::new()
+        );
         assert_eq!(joinable_lines("// NOTE: a note\n// that wraps.\n"), [1]);
     }
 
@@ -485,19 +530,25 @@ mod tests {
         assert_eq!(joinable_lines("/// In\n/// 2022. Then\n"), [1]);
         assert_eq!(joinable_lines("/// One\n/// *\n"), [1]);
         assert_eq!(joinable_lines("/// One\n/// <span>\n"), [1]);
-        assert_eq!(joinable_lines("/// One\n/// 1. Item\n"), []);
-        assert_eq!(joinable_lines("/// One\n/// - Item\n"), []);
+        assert_eq!(
+            joinable_lines("/// One\n/// 1. Item\n"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(joinable_lines("/// One\n/// - Item\n"), Vec::<usize>::new());
     }
 
     #[test]
     fn setext_underline_turns_its_paragraph_into_a_heading() {
         let heading = "/// A heading\n/// that wraps\n/// ===\n/// Text\n/// wraps.\n";
         assert_eq!(joinable_lines(heading), [4]);
-        assert_eq!(joinable_lines("/// A heading\n/// ---\n"), []);
+        assert_eq!(
+            joinable_lines("/// A heading\n/// ---\n"),
+            Vec::<usize>::new()
+        );
         assert_eq!(joinable_lines("/// ---\n/// Text\n/// wraps.\n"), [2]);
         let in_list_item =
             "/// * Item\n///\n///   Heading\n///   ===\n///\n///   indented\n///   text\n";
-        assert_eq!(joinable_lines(in_list_item), []);
+        assert_eq!(joinable_lines(in_list_item), Vec::<usize>::new());
     }
 
     #[test]
@@ -506,9 +557,9 @@ mod tests {
             joinable_lines("/// Text\n/// * * *\n/// More\n/// text.\n"),
             [3]
         );
-        assert_eq!(joinable_lines("/// Text\n/// ***\n"), []);
+        assert_eq!(joinable_lines("/// Text\n/// ***\n"), Vec::<usize>::new());
         let after_list_item = "/// * Item\n/// ***\n///   indented\n///   text\n";
-        assert_eq!(joinable_lines(after_list_item), []);
+        assert_eq!(joinable_lines(after_list_item), Vec::<usize>::new());
     }
 
     #[test]
@@ -524,11 +575,11 @@ mod tests {
     #[test]
     fn any_list_item_ends_a_lazy_continuation_of_a_list_item() {
         let lazy = "/// 1. An item\n/// lazy line\n/// 2. Next\n/// item.\n";
-        assert_eq!(joinable_lines(lazy), []);
+        assert_eq!(joinable_lines(lazy), Vec::<usize>::new());
         let not_lazy = "/// 1. An item\n///\n/// Paragraph\n/// 2. Not an item.\n";
         assert_eq!(joinable_lines(not_lazy), [3]);
         let lazy_tagged = "/// 1. An item\n/// NOTE: lazy\n/// 2. Next\n/// item.\n";
-        assert_eq!(joinable_lines(lazy_tagged), []);
+        assert_eq!(joinable_lines(lazy_tagged), Vec::<usize>::new());
     }
 
     #[test]
@@ -536,9 +587,9 @@ mod tests {
         let nested = "/// * Top\n///      * Nested\n///        wraps.\n";
         assert_eq!(joinable_lines(nested), [2]);
         let too_deep = "/// * Top\n///       * Nested\n///         wraps.\n";
-        assert_eq!(joinable_lines(too_deep), []);
+        assert_eq!(joinable_lines(too_deep), Vec::<usize>::new());
         let indented_code = "// Intro:\n//\n//     - not a list\n//       item.\n";
-        assert_eq!(joinable_lines(indented_code), []);
+        assert_eq!(joinable_lines(indented_code), Vec::<usize>::new());
     }
 
     #[test]
