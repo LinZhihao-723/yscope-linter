@@ -1,82 +1,26 @@
 //! End-to-end tests of the `yscope-linter` binary.
 
+mod support;
+
 use std::fs;
-use std::io::Write;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
-use std::process::Stdio;
 
-const INVALID_SUPPRESSION: &str = "// yscope-linter: allow(errors-doc)\n";
-
-/// Creates an empty directory for one test under the target's temporary directory.
-///
-/// # Returns
-///
-/// The path of the directory.
-///
-/// # Panics
-///
-/// Panics if the directory can't be recreated.
-fn test_directory(test_name: &str) -> PathBuf {
-    let directory = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("cli")
-        .join(test_name);
-    if directory.exists() {
-        fs::remove_dir_all(&directory).expect("failed to clear the test directory");
-    }
-    fs::create_dir_all(&directory).expect("failed to create the test directory");
-    directory
-}
-
-/// Writes `contents` to `relative_path` under `directory`, creating parent directories.
-///
-/// # Panics
-///
-/// Panics if the file can't be written.
-fn write_file(directory: &Path, relative_path: &str, contents: &str) {
-    let path = directory.join(relative_path);
-    fs::create_dir_all(path.parent().expect("a file path has a parent"))
-        .expect("failed to create the parent directory");
-    fs::write(path, contents).expect("failed to write the test file");
-}
+use support::INVALID_SUPPRESSION;
+use support::stdout_lines;
+use support::test_directory;
+use support::write_file;
 
 /// Runs the binary in `directory` with `args`, feeding `stdin` to it.
 ///
 /// # Returns
 ///
 /// The finished process's output.
-///
-/// # Panics
-///
-/// Panics if the binary can't be run.
 fn run(directory: &Path, args: &[&str], stdin: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yscope-linter"))
-        .args(args)
-        .current_dir(directory)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn the binary");
-    child
-        .stdin
-        .take()
-        .expect("stdin is piped")
-        .write_all(stdin.as_bytes())
-        .expect("failed to write stdin");
-    child
-        .wait_with_output()
-        .expect("failed to wait for the binary")
-}
-
-fn stdout_lines(output: &Output) -> Vec<String> {
-    String::from_utf8(output.stdout.clone())
-        .expect("stdout is UTF-8")
-        .lines()
-        .map(str::to_owned)
-        .collect()
+    let mut command = Command::new(env!("CARGO_BIN_EXE_yscope-linter"));
+    command.args(args);
+    support::run_command(command, directory, stdin)
 }
 
 #[test]
@@ -342,6 +286,33 @@ fn diff_input_selects_changed_lines_and_respects_excludes() {
         })
         .collect();
     assert_eq!(lines, ["a.rs:3:1"]);
+}
+
+#[test]
+fn diff_with_non_utf8_content_lines_selects_its_changed_lines() {
+    let directory = test_directory("diff_with_non_utf8_content_lines_selects_its_changed_lines");
+    write_file(&directory, "a.rs", INVALID_SUPPRESSION);
+    let diff_bytes = [
+        b"--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old \xff\n+".as_slice(),
+        INVALID_SUPPRESSION.as_bytes(),
+    ]
+    .concat();
+    fs::write(directory.join("change.diff"), &diff_bytes).expect("failed to write the diff");
+
+    let output = run(&directory, &["--diff", "change.diff"], "");
+    assert_eq!(output.status.code(), Some(1));
+    let file_lines = stdout_lines(&output);
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_yscope-linter"));
+    command.args(["--diff", "-"]);
+    let output = support::run_command(command, &directory, &diff_bytes);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout_lines(&output), file_lines);
+    assert_eq!(file_lines.len(), 1, "{file_lines:?}");
+    assert!(
+        file_lines[0].starts_with("a.rs:1:1: LNT002 "),
+        "{file_lines:?}"
+    );
 }
 
 #[test]

@@ -1,8 +1,13 @@
-//! The fatal errors of a lint run: invalid arguments, invalid diff input and I/O failures.
+//! The fatal errors of a lint run: invalid arguments, invalid diff input, invalid cargo workspaces
+//! and settings, and I/O failures.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
+use std::process::ExitStatus;
+
+use crate::cargo::SettingsTable;
 
 /// A failure that stops the whole run before any diagnostic is printed.
 #[derive(Debug)]
@@ -33,6 +38,31 @@ pub enum Error {
     InvalidDiff {
         line_number: usize,
         reason: InvalidDiffReason,
+    },
+
+    /// `cargo metadata` couldn't be started.
+    RunCargo {
+        program: OsString,
+        source: io::Error,
+    },
+
+    /// `cargo metadata` exited with a failure, after printing its error to stderr.
+    CargoMetadataFailed { status: ExitStatus },
+
+    /// The output of `cargo metadata` isn't the JSON it documents.
+    InvalidCargoMetadata { source: serde_json::Error },
+
+    /// A `metadata.yscope-linter` table of a `Cargo.toml` has an unknown key or an invalid value.
+    InvalidSettings {
+        manifest_path: PathBuf,
+        table: SettingsTable,
+        source: serde_json::Error,
+    },
+
+    /// A package selected or excluded by name isn't a member of the workspace.
+    PackageNotFound {
+        name: String,
+        workspace_root: PathBuf,
     },
 }
 
@@ -72,6 +102,37 @@ impl fmt::Display for Error {
                 formatter,
                 "invalid diff input at line {line_number}: {reason}"
             ),
+            Self::RunCargo { program, source } => write!(
+                formatter,
+                "failed to run `{} metadata`: {source}",
+                program.display()
+            ),
+            Self::CargoMetadataFailed { status } => {
+                write!(formatter, "`cargo metadata` failed ({status})")
+            }
+            Self::InvalidCargoMetadata { source } => {
+                write!(
+                    formatter,
+                    "failed to parse the output of `cargo metadata`: {source}"
+                )
+            }
+            Self::InvalidSettings {
+                manifest_path,
+                table,
+                source,
+            } => write!(
+                formatter,
+                "invalid `{table}` in `{}`: {source}",
+                manifest_path.display()
+            ),
+            Self::PackageNotFound {
+                name,
+                workspace_root,
+            } => write!(
+                formatter,
+                "package `{name}` not found in the workspace `{}`",
+                workspace_root.display()
+            ),
         }
     }
 }
@@ -79,12 +140,19 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } | Self::ReadStdin { source } => Some(source),
+            Self::Io { source, .. }
+            | Self::ReadStdin { source }
+            | Self::RunCargo { source, .. } => Some(source),
+            Self::InvalidCargoMetadata { source } | Self::InvalidSettings { source, .. } => {
+                Some(source)
+            }
             Self::TargetNotFound { .. }
             | Self::RangesOnDirectory { .. }
             | Self::InvalidLineRange { .. }
             | Self::LineNumberOverflow { .. }
-            | Self::InvalidDiff { .. } => None,
+            | Self::InvalidDiff { .. }
+            | Self::CargoMetadataFailed { .. }
+            | Self::PackageNotFound { .. } => None,
         }
     }
 }

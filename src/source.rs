@@ -157,7 +157,7 @@ pub fn discover(
                 return Err(Error::RangesOnDirectory { path });
             }
             let mut walked_files = Vec::new();
-            walk_directory(&path, &mut walked_files)?;
+            walk_directory(&path, &|_| false, &mut walked_files)?;
             for walked_file in walked_files {
                 add_file(walked_file, LineFilter::All);
             }
@@ -195,17 +195,21 @@ pub fn is_generated(source_text: &str) -> bool {
         })
 }
 
-/// The number of leading lines searched for the `@generated` marker.
-const GENERATED_MARKER_LINES: usize = 5;
-
 /// Appends every `.rs` file under `directory` to `files`, in sorted order within each directory.
+///
+/// Directories named `target`, hidden directories, directory symlinks and the directories that
+/// `is_skipped` accepts are skipped.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 ///
 /// * [`Error::Io`] if the directory's entries, or an entry's file type, can't be read.
-fn walk_directory(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {
+pub fn walk_directory(
+    directory: &Path,
+    is_skipped: &impl Fn(&Path) -> bool,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), Error> {
     let io_error = |source| Error::Io {
         path: directory.to_path_buf(),
         source,
@@ -224,10 +228,10 @@ fn walk_directory(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Erro
         if file_type.is_dir() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name == "target" || name.starts_with('.') {
+            if name == "target" || name.starts_with('.') || is_skipped(&path) {
                 continue;
             }
-            walk_directory(&path, files)?;
+            walk_directory(&path, is_skipped, files)?;
         } else if path.extension().is_some_and(|extension| extension == "rs")
             && (file_type.is_file() || path.is_file())
         {
@@ -236,6 +240,9 @@ fn walk_directory(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Erro
     }
     Ok(())
 }
+
+/// The number of leading lines searched for the `@generated` marker.
+const GENERATED_MARKER_LINES: usize = 5;
 
 /// Normalizes a path lexically by dropping its `.` components, so `./src/a.rs` becomes `src/a.rs`.
 ///
