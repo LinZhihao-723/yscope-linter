@@ -22,7 +22,7 @@ pub struct LintConfig {
 }
 
 /// Everything a `cargo yscope-linter` run needs, validated from the command line.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CargoConfig {
     pub manifest_path: Option<PathBuf>,
     pub package_selection: PackageSelection,
@@ -44,7 +44,7 @@ pub struct CheckConfig {
 }
 
 /// The workspace members a `cargo yscope-linter` run lints, selected as cargo selects them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum PackageSelection {
     /// The default members of the selected manifest's workspace, as `cargo metadata` reports them.
     Default,
@@ -148,7 +148,7 @@ impl DiffInput {
     ///
     /// # Returns
     ///
-    /// The diff text on success.
+    /// The diff text, with each invalid UTF-8 sequence replaced by U+FFFD, on success.
     ///
     /// # Errors
     ///
@@ -157,19 +157,21 @@ impl DiffInput {
     /// * [`Error::ReadStdin`] if the standard input can't be read.
     /// * [`Error::Io`] if the diff file can't be read.
     pub fn read(&self) -> Result<String, Error> {
-        match self {
+        let diff_bytes = match self {
             Self::Stdin => {
-                let mut diff_text = String::new();
+                let mut diff_bytes = Vec::new();
                 std::io::stdin()
-                    .read_to_string(&mut diff_text)
+                    .read_to_end(&mut diff_bytes)
                     .map_err(|source| Error::ReadStdin { source })?;
-                Ok(diff_text)
+                diff_bytes
             }
-            Self::File { path } => fs::read_to_string(path).map_err(|source| Error::Io {
+            Self::File { path } => fs::read(path).map_err(|source| Error::Io {
                 path: path.clone(),
                 source,
-            }),
-        }
+            })?,
+        };
+        Ok(String::from_utf8(diff_bytes)
+            .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()))
     }
 }
 

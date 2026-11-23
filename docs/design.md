@@ -224,7 +224,8 @@ Adding `serde_json` made `assert_eq!(vec, [])` ambiguous in tests, since it impl
 `driver::run` performs one `yscope-linter` run:
 
 1. With `--diff`, it reads the diff (a file, or stdin for `-`) and parses it into per-file
-   `LineRanges`.
+   `LineRanges`. An invalid UTF-8 sequence in the diff is replaced with U+FFFD rather than rejected,
+   since only the `+++` paths and the hunk headers are parsed.
 2. `source::discover` merges the positional targets, the diff's files and the excludes into a sorted
    list of `SourceFile`s, each with a `LineFilter`.
 3. It passes the files to `driver::check` as one `FileGroup`, with the `CheckConfig` of the command
@@ -275,7 +276,9 @@ fast, and makes `packages` the workspace members.
 
 The tool reads only `packages` (each `name`, `id`, `manifest_path` and `metadata`),
 `workspace_default_members`, `workspace_root`, `target_directory` and the workspace `metadata`.
-These types don't deny unknown fields, since cargo adds fields over time.
+These types don't deny unknown fields, since cargo adds fields over time. A `manifest_path` is
+parsed into a `ManifestPath`, which rejects a path without a parent directory as
+`Error::InvalidCargoMetadata`, so a package directory is never made up.
 
 `Workspace::select` maps the `PackageSelection` to members:
 
@@ -323,8 +326,10 @@ unset: `rule_selectors`, `width`, `include_tests`, and the `excludes`, which are
   user. The other keys of `metadata` belong to other tools and are ignored.
 * `rules` parses through `RuleSelector`'s `try_from = "String"`, with the same messages as `--rule`.
 * `width` is a `NonZeroUsize`, so 0 is rejected while parsing.
-* `rebased` joins relative excludes to the directory they are relative to: the workspace root, the
-  package directory, or the current directory for the command line.
+* `from_table` joins each exclude of a table to the directory of the `Cargo.toml` that declares it.
+  The command line's excludes are kept as written, and `Plan::new` resolves every exclude against
+  the current directory, so a relative one on the command line is relative to it. `SettingsTable`
+  names the table in errors and warnings.
 * `overridden_by` keeps each setting of the overriding source when it is set, and appends the
   excludes. `Plan::new` folds the workspace's settings, the package's and the command line's in that
   order, and `check_config` fills the unset ones with the defaults: every rule, `Width::DEFAULT` and
@@ -333,8 +338,9 @@ unset: `rule_selectors`, `width`, `include_tests`, and the `excludes`, which are
 The command line's `--include-tests` is a flag, so it is `Some(true)` or `None`: it can turn test
 checking on over a setting, but not off.
 
-The path mode never reads `Cargo.toml`. Its `Cli::into_config` builds its `CheckConfig` through
-`Settings::check_config` too, so the defaults live in one place.
+The path mode never reads `Cargo.toml`. Both command lines turn their shared `SettingsOptions` into
+`Settings` with the same `From` impl, and `Cli::into_config` builds its `CheckConfig` through
+`Settings::check_config` too, so the mapping and the defaults live in one place.
 
 ## FileContext
 
@@ -1980,17 +1986,20 @@ fn or comment it belonged to, and the anchor spans cover the rest.
   rule](#deprecating-a-rule).
 * `tests/cli.rs` runs the built binary (`CARGO_BIN_EXE_yscope-linter`) on files each test writes
   under `CARGO_TARGET_TMPDIR`. It covers the output format and order, exit codes, the directory
-  walk, `@generated` skipping, `--rule`, `--exclude`, `--diff -`, `--format github` and `--version`.
-* `cargo/metadata.rs` tests the package selection on hand-written `cargo metadata` output, and
-  `cargo/settings.rs` the parsing, the error context and the precedence of the settings.
+  walk, `@generated` skipping, `--rule`, `--exclude`, `--diff -` and `--diff <FILE>`, including a
+  diff that isn't UTF-8, `--format github` and `--version`.
+* `cargo/metadata.rs` tests the package selection and the rejected manifest paths on hand-written
+  `cargo metadata` output, `cargo/settings.rs` the parsing, the error context and the precedence of
+  the settings, and `cli.rs` the settings of the command-line options.
 * `tests/cargo.rs` runs `CARGO_BIN_EXE_cargo-yscope-linter` with cargo's `yscope-linter` first
   argument on cargo workspaces that each test writes, so the real `cargo metadata` answers. It
   covers the default selection from the root and from a member, `-p`, `--workspace` and
   `--exclude-package`, a single package's targets and a custom target directory, the files outside
-  every package and in nested packages, the settings' precedence and relative excludes,
-  `include-tests`, `--diff` limited to the selected packages, relative paths in the GitHub format,
-  and the fatal errors: a failing `cargo metadata`, a missing cargo, an invalid setting and an
-  unknown package.
+  every package and in nested packages, the settings' precedence and relative excludes, including
+  `..` components and command-line excludes from a member directory, `include-tests` and
+  `--include-tests`, `--diff` limited to the selected packages and run from a member directory,
+  relative paths in the GitHub format, and the fatal errors: a failing `cargo metadata`, a missing
+  cargo, an invalid package or workspace setting and an unknown package.
 * The repository lints itself with `yscope-linter src tests` and with
   `cargo yscope-linter --include-tests`, which must both be clean.
 

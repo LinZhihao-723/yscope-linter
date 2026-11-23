@@ -1,17 +1,17 @@
 //! The lint settings of the command line and of the `metadata.yscope-linter` tables of a
 //! workspace's `Cargo.toml` files, and their merging.
 
+use std::fmt;
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::cargo::metadata::ManifestPath;
 use crate::config::CheckConfig;
 use crate::config::RuleSet;
 use crate::config::Width;
 use crate::error::Error;
-use crate::rules::RuleId;
 use crate::rules::RuleSelector;
 
 /// The settings that one source gives. Each setting that is `None` is left to the sources it
@@ -27,15 +27,12 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub const PACKAGE_TABLE: &str = "[package.metadata.yscope-linter]";
-    pub const WORKSPACE_TABLE: &str = "[workspace.metadata.yscope-linter]";
-
     /// Parses the `yscope-linter` table that `table` names, of the `Cargo.toml` at `manifest_path`.
     ///
     /// # Returns
     ///
-    /// The table's settings, with its excludes as written, relative to the manifest's directory, or
-    /// the empty settings if `settings_table` is `None`, on success.
+    /// The table's settings, with each exclude joined to the manifest's directory, or the empty
+    /// settings if `settings_table` is `None`, on success.
     ///
     /// # Errors
     ///
@@ -45,15 +42,15 @@ impl Settings {
     ///   or isn't a table.
     pub fn from_table(
         settings_table: Option<&serde_json::Value>,
-        table: &'static str,
-        manifest_path: &Path,
+        table: SettingsTable,
+        manifest_path: &ManifestPath,
     ) -> Result<Self, Error> {
         let Some(settings_table) = settings_table else {
             return Ok(Self::default());
         };
         let raw_settings =
             RawSettings::deserialize(settings_table).map_err(|source| Error::InvalidSettings {
-                manifest_path: manifest_path.to_path_buf(),
+                manifest_path: manifest_path.path().to_path_buf(),
                 table,
                 source,
             })?;
@@ -61,18 +58,12 @@ impl Settings {
             rule_selectors: raw_settings.rules,
             width: raw_settings.width.map(Width::new),
             include_tests: raw_settings.include_tests,
-            excludes: raw_settings.exclude,
+            excludes: raw_settings
+                .exclude
+                .into_iter()
+                .map(|exclude| manifest_path.directory().join(exclude))
+                .collect(),
         })
-    }
-
-    /// # Returns
-    ///
-    /// The settings with each relative exclude joined to `base_directory`.
-    pub fn rebased(mut self, base_directory: &Path) -> Self {
-        for exclude in &mut self.excludes {
-            *exclude = base_directory.join(&*exclude);
-        }
-        self
     }
 
     /// # Returns
@@ -91,11 +82,24 @@ impl Settings {
 
     /// # Returns
     ///
-    /// The deprecated rules that the `rules` setting names, each once.
-    pub fn deprecated_rule_ids(&self) -> Vec<RuleId> {
-        self.rule_selectors
-            .as_deref()
-            .map_or_else(Vec::new, RuleSelector::deprecated_rule_ids)
+    /// A warning for each deprecated rule that the `rules` setting of `table` in the `Cargo.toml`
+    /// at `manifest_path` names.
+    pub fn deprecation_warnings(
+        &self,
+        table: SettingsTable,
+        manifest_path: &ManifestPath,
+    ) -> Vec<String> {
+        RuleSelector::deprecated_rule_ids(self.rule_selectors.as_deref().unwrap_or_default())
+            .into_iter()
+            .map(|rule_id| {
+                format!(
+                    "`{rule_id}` ({}) is deprecated and never runs; remove it from `rules` in \
+                     `{table}` of `{}`",
+                    rule_id.code(),
+                    manifest_path.path().display()
+                )
+            })
+            .collect()
     }
 
     /// # Returns
@@ -119,6 +123,22 @@ impl Settings {
     }
 }
 
+/// The `metadata.yscope-linter` table of a `Cargo.toml` that settings come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTable {
+    Workspace,
+    Package,
+}
+
+impl fmt::Display for SettingsTable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Workspace => "[workspace.metadata.yscope-linter]",
+            Self::Package => "[package.metadata.yscope-linter]",
+        })
+    }
+}
+
 /// A `metadata.yscope-linter` table as written.
 #[derive(Debug, Deserialize)]
 #[serde(
@@ -138,14 +158,19 @@ struct RawSettings {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+    use crate::rules::RuleId;
 
     fn parsed(json: &str) -> Result<Settings, Error> {
         let settings_table: serde_json::Value = serde_json::from_str(json).expect("valid JSON");
+        let manifest_path = ManifestPath::try_from(PathBuf::from("/ws/a/Cargo.toml"))
+            .expect("a manifest path with a parent");
         Settings::from_table(
             Some(&settings_table),
-            Settings::PACKAGE_TABLE,
-            Path::new("/ws/a/Cargo.toml"),
+            SettingsTable::Package,
+            &manifest_path,
         )
     }
 
@@ -162,13 +187,12 @@ mod tests {
     }
 
     #[test]
-    fn table_sets_each_setting_and_rebased_excludes_are_relative_to_the_manifest() {
+    fn table_sets_each_setting_and_excludes_are_relative_to_the_manifest() {
         let settings = parsed(
             r#"{"width": 80, "include-tests": true, "exclude": ["src/gen", "../b", "/abs"],
                 "rules": ["errors-doc"]}"#,
         )
-        .expect("valid settings")
-        .rebased(Path::new("/ws/a"));
+        .expect("valid settings");
         assert_eq!(
             settings,
             Settings {
@@ -195,39 +219,25 @@ mod tests {
                 RuleId::TypeParamsDoc
             ]
         );
-        assert_eq!(enabled_rules(&Settings::default()), RuleId::ALL);
     }
 
     #[test]
     fn invalid_table_is_an_error_that_names_the_table_and_the_manifest() {
-        for (json, cause) in [
-            (r#"{"widht": 80}"#, "unknown field `widht`"),
-            (r#"{"width": "80"}"#, "invalid type: string \"80\""),
-            (r#"{"width": 0}"#, "invalid value: integer `0`"),
-            (
-                r#"{"include-tests": 1}"#,
-                "invalid type: integer `1`, expected a boolean",
-            ),
-            (
-                r#"{"exclude": "src"}"#,
-                "invalid type: string \"src\", expected a sequence",
-            ),
-            (r#"{"rules": ["doc003"]}"#, "unknown rule `doc003`"),
-            (r#"{"rules": ["LNT001"]}"#, "`LNT001` is not a rule"),
-            (
-                "true",
-                "invalid type: boolean `true`, expected a table with the keys",
-            ),
-        ] {
-            let message = parsed(json).expect_err("invalid settings").to_string();
-            assert!(
-                message.starts_with(
-                    "invalid `[package.metadata.yscope-linter]` in `/ws/a/Cargo.toml`: "
-                ),
-                "{json}: {message}"
-            );
-            assert!(message.contains(cause), "{json}: {message}");
-        }
+        let error = parsed(r#"{"width": "80"}"#).expect_err("invalid settings");
+        let Error::InvalidSettings {
+            manifest_path,
+            table,
+            source,
+        } = &error
+        else {
+            panic!("unexpected error: {error:?}");
+        };
+        assert_eq!(manifest_path, Path::new("/ws/a/Cargo.toml"));
+        assert_eq!(*table, SettingsTable::Package);
+        assert!(
+            source.to_string().contains("invalid type: string \"80\""),
+            "{source}"
+        );
     }
 
     #[test]

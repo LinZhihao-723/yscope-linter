@@ -272,21 +272,23 @@ impl Rule {
     ///
     /// # Returns
     ///
-    /// The rule `rule_id`, with the settings of `config`.
-    pub const fn new(rule_id: RuleId, config: &CheckConfig) -> Self {
+    /// The rule `rule_id`, with the settings of `check_config`.
+    pub const fn new(rule_id: RuleId, check_config: &CheckConfig) -> Self {
         match rule_id {
             RuleId::CommentGreedyWrap => {
-                Self::CommentGreedyWrap(greedy_wrap::Checker::new(config.width))
+                Self::CommentGreedyWrap(greedy_wrap::Checker::new(check_config.width))
             }
-            RuleId::ErrorsDoc => Self::ErrorsDoc(errors_doc::Checker::new(config.include_tests)),
+            RuleId::ErrorsDoc => {
+                Self::ErrorsDoc(errors_doc::Checker::new(check_config.include_tests))
+            }
             RuleId::SymbolOrder => {
-                Self::SymbolOrder(symbol_order::Checker::new(config.include_tests))
+                Self::SymbolOrder(symbol_order::Checker::new(check_config.include_tests))
             }
             RuleId::TraitParamsDoc => {
-                Self::TraitParamsDoc(trait_params_doc::Checker::new(config.include_tests))
+                Self::TraitParamsDoc(trait_params_doc::Checker::new(check_config.include_tests))
             }
             RuleId::TypeParamsDoc => {
-                Self::TypeParamsDoc(type_params_doc::Checker::new(config.include_tests))
+                Self::TypeParamsDoc(type_params_doc::Checker::new(check_config.include_tests))
             }
         }
     }

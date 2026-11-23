@@ -1,6 +1,7 @@
 //! Running `cargo metadata` and selecting the workspace members it lists.
 
 use std::ffi::OsString;
+use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -66,23 +67,12 @@ impl Workspace {
 
     /// # Returns
     ///
-    /// The workspace that the `cargo metadata` output `json` describes on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    ///
-    /// * [`Error::InvalidCargoMetadata`] if `json` doesn't have the shape that cargo documents for
-    ///   `cargo metadata --format-version 1`.
-    pub fn from_json(json: &[u8]) -> Result<Self, Error> {
-        serde_json::from_slice(json).map_err(|source| Error::InvalidCargoMetadata { source })
-    }
-
-    /// # Returns
-    ///
     /// The path of the workspace's root `Cargo.toml`.
-    pub fn manifest_path(&self) -> PathBuf {
-        self.root.join("Cargo.toml")
+    pub fn manifest_path(&self) -> ManifestPath {
+        ManifestPath {
+            path: self.root.join("Cargo.toml"),
+            directory: self.root.clone(),
+        }
     }
 
     /// # Returns
@@ -131,14 +121,28 @@ impl Workspace {
             })
             .collect())
     }
+
+    /// # Returns
+    ///
+    /// The workspace that the `cargo metadata` output `json` describes on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    ///
+    /// * [`Error::InvalidCargoMetadata`] if `json` doesn't have the shape that cargo documents for
+    ///   `cargo metadata --format-version 1`.
+    fn from_json(json: &[u8]) -> Result<Self, Error> {
+        serde_json::from_slice(json).map_err(|source| Error::InvalidCargoMetadata { source })
+    }
 }
 
 /// A workspace member.
 #[derive(Debug, Deserialize)]
 pub struct Package {
-    pub name: String,
+    name: String,
     id: PackageId,
-    pub manifest_path: PathBuf,
+    pub manifest_path: ManifestPath,
 
     /// The `[package.metadata]` table.
     metadata: Option<MetadataTable>,
@@ -147,16 +151,57 @@ pub struct Package {
 impl Package {
     /// # Returns
     ///
-    /// The directory of the package's `Cargo.toml`.
-    pub fn directory(&self) -> &Path {
-        self.manifest_path.parent().unwrap_or_else(|| Path::new(""))
-    }
-
-    /// # Returns
-    ///
     /// The `[package.metadata.yscope-linter]` table, if there is one.
     pub fn settings_table(&self) -> Option<&serde_json::Value> {
         MetadataTable::settings_table(self.metadata.as_ref())
+    }
+}
+
+/// The path of a `Cargo.toml`, which has a parent directory.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "PathBuf")]
+pub struct ManifestPath {
+    path: PathBuf,
+    directory: PathBuf,
+}
+
+impl ManifestPath {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+}
+
+impl TryFrom<PathBuf> for ManifestPath {
+    type Error = ManifestPathWithoutParent;
+
+    fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
+        let Some(directory) = path.parent() else {
+            return Err(ManifestPathWithoutParent { path });
+        };
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            path,
+        })
+    }
+}
+
+/// Why a path from `cargo metadata` is not a [`ManifestPath`].
+#[derive(Debug)]
+pub struct ManifestPathWithoutParent {
+    path: PathBuf,
+}
+
+impl fmt::Display for ManifestPathWithoutParent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "manifest path `{}` has no parent directory",
+            self.path.display()
+        )
     }
 }
 
@@ -178,7 +223,7 @@ impl MetadataTable {
 }
 
 /// A package ID, which `cargo metadata` uses to list the default members.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize)]
 #[serde(transparent)]
 struct PackageId {
     id: String,
@@ -294,10 +339,40 @@ mod tests {
             let error = workspace
                 .select(&selection)
                 .expect_err("an unknown package name");
-            assert_eq!(
-                error.to_string(),
-                "package `nope` not found in the workspace `/ws`",
-                "{selection:?}"
+            assert!(
+                matches!(
+                    &error,
+                    Error::PackageNotFound { name, workspace_root }
+                        if name == "nope" && workspace_root == Path::new("/ws")
+                ),
+                "{selection:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_path_without_a_parent_is_invalid_metadata() {
+        let manifest_path = ManifestPath::try_from(PathBuf::from("/ws/a/Cargo.toml"))
+            .expect("a manifest path with a parent");
+        assert_eq!(manifest_path.path(), Path::new("/ws/a/Cargo.toml"));
+        assert_eq!(manifest_path.directory(), Path::new("/ws/a"));
+
+        for path in ["", "/"] {
+            let json = format!(
+                r#"{{"packages": [{{"name": "a", "id": "id-a", "manifest_path": "{path}",
+                    "metadata": null}}], "workspace_default_members": [], "workspace_root": "/ws",
+                    "target_directory": "/ws/target", "metadata": null}}"#
+            );
+            let error = Workspace::from_json(json.as_bytes())
+                .expect_err("a manifest path without a parent");
+            let Error::InvalidCargoMetadata { source } = &error else {
+                panic!("{path:?}: unexpected error: {error:?}");
+            };
+            assert!(
+                source
+                    .to_string()
+                    .contains(&format!("manifest path `{path}` has no parent directory")),
+                "{path:?}: {source}"
             );
         }
     }

@@ -56,25 +56,17 @@ impl Cli {
             .map(|argument| TargetSpec::from_str(argument))
             .collect::<Result<Vec<_>, _>>()?;
         let LintOptions {
-            rules,
-            width,
-            include_tests,
-            excludes,
+            settings_options,
             diff,
             format,
         } = self.lint_options;
-        let settings = Settings {
-            rule_selectors: (!rules.is_empty()).then_some(rules),
-            width: width.map(Width::new),
-            include_tests: Some(include_tests),
-            excludes: Vec::new(),
-        };
+        let settings = Settings::from(settings_options);
         Ok(LintConfig {
             check_config: settings.check_config(),
             format,
             targets,
             diff_input: diff.map(DiffInput::from_argument),
-            excludes,
+            excludes: settings.excludes,
         })
     }
 }
@@ -149,22 +141,14 @@ impl CargoArgs {
             }
         };
         let LintOptions {
-            rules,
-            width,
-            include_tests,
-            excludes,
+            settings_options,
             diff,
             format,
         } = self.lint_options;
         CargoConfig {
             manifest_path: self.manifest_path,
             package_selection,
-            overrides: Settings {
-                rule_selectors: (!rules.is_empty()).then_some(rules),
-                width: width.map(Width::new),
-                include_tests: include_tests.then_some(true),
-                excludes,
-            },
+            overrides: Settings::from(settings_options),
             format,
             diff_input: diff.map(DiffInput::from_argument),
         }
@@ -174,6 +158,38 @@ impl CargoArgs {
 /// The options that both interfaces share.
 #[derive(Debug, clap::Args)]
 struct LintOptions {
+    #[command(flatten)]
+    settings_options: SettingsOptions,
+
+    /// Lint the changed lines of a unified diff (`git diff -U0`); `-` reads stdin.
+    #[arg(long, value_name = "FILE")]
+    diff: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+}
+
+impl LintOptions {
+    /// # Returns
+    ///
+    /// A warning for each deprecated rule that `--rule` names, since it never runs.
+    fn warnings(&self) -> Vec<String> {
+        RuleSelector::deprecated_rule_ids(&self.settings_options.rules)
+            .into_iter()
+            .map(|rule_id| {
+                format!(
+                    "`{rule_id}` ({}) is deprecated and never runs; remove it from `--rule`",
+                    rule_id.code()
+                )
+            })
+            .collect()
+    }
+}
+
+/// The options that set the command line's [`Settings`].
+#[derive(Debug, clap::Args)]
+struct SettingsOptions {
     /// Enable only this rule: a name, a code (DOC003) or a set (DOC). Repeatable. Default: all
     /// rules.
     #[arg(long = "rule", value_name = "ID")]
@@ -190,30 +206,22 @@ struct LintOptions {
     /// Skip this file or directory (path-prefix match by whole components). Repeatable.
     #[arg(long = "exclude", value_name = "PATH")]
     excludes: Vec<PathBuf>,
-
-    /// Lint the changed lines of a unified diff (`git diff -U0`); `-` reads stdin.
-    #[arg(long, value_name = "FILE")]
-    diff: Option<PathBuf>,
-
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    format: OutputFormat,
 }
 
-impl LintOptions {
-    /// # Returns
-    ///
-    /// A warning for each deprecated rule that `--rule` names, since it never runs.
-    fn warnings(&self) -> Vec<String> {
-        RuleSelector::deprecated_rule_ids(&self.rules)
-            .into_iter()
-            .map(|rule_id| {
-                format!(
-                    "`{rule_id}` ({}) is deprecated and never runs; remove it from `--rule`",
-                    rule_id.code()
-                )
-            })
-            .collect()
+impl From<SettingsOptions> for Settings {
+    fn from(settings_options: SettingsOptions) -> Self {
+        let SettingsOptions {
+            rules,
+            width,
+            include_tests,
+            excludes,
+        } = settings_options;
+        Self {
+            rule_selectors: (!rules.is_empty()).then_some(rules),
+            width: width.map(Width::new),
+            include_tests: include_tests.then_some(true),
+            excludes,
+        }
     }
 }
 
@@ -256,6 +264,32 @@ mod tests {
             [RuleId::TypeParamsDoc]
         );
         assert_eq!(enabled_rules(parse(&["a.rs"])), RuleId::ALL);
+    }
+
+    #[test]
+    fn settings_options_set_only_the_settings_they_are_given() {
+        let settings = |args: &[&str]| Settings::from(parse(args).lint_options.settings_options);
+        assert_eq!(settings(&["a.rs"]), Settings::default());
+        assert_eq!(
+            settings(&[
+                "--rule",
+                "errors-doc",
+                "--width",
+                "80",
+                "--include-tests",
+                "--exclude",
+                "b",
+                "--exclude",
+                "c",
+                "a.rs"
+            ]),
+            Settings {
+                rule_selectors: Some(vec![RuleSelector::Rule(RuleId::ErrorsDoc)]),
+                width: Some(Width::new(NonZeroUsize::new(80).expect("non-zero"))),
+                include_tests: Some(true),
+                excludes: vec![PathBuf::from("b"), PathBuf::from("c")],
+            }
+        );
     }
 
     #[test]

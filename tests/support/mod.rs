@@ -51,7 +51,7 @@ pub fn write_file(directory: &Path, relative_path: &str, contents: &str) {
 /// # Panics
 ///
 /// Panics if the command can't be run.
-pub fn run_command(mut command: Command, directory: &Path, stdin: &str) -> Output {
+pub fn run_command(mut command: Command, directory: &Path, stdin: impl AsRef<[u8]>) -> Output {
     let mut child = command
         .current_dir(directory)
         .stdin(Stdio::piped())
@@ -63,7 +63,7 @@ pub fn run_command(mut command: Command, directory: &Path, stdin: &str) -> Outpu
         .stdin
         .take()
         .expect("stdin is piped")
-        .write_all(stdin.as_bytes())
+        .write_all(stdin.as_ref())
         .expect("failed to write stdin");
     child
         .wait_with_output()

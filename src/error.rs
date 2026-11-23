@@ -7,6 +7,8 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
+use crate::cargo::SettingsTable;
+
 /// A failure that stops the whole run before any diagnostic is printed.
 #[derive(Debug)]
 pub enum Error {
@@ -53,7 +55,7 @@ pub enum Error {
     /// A `metadata.yscope-linter` table of a `Cargo.toml` has an unknown key or an invalid value.
     InvalidSettings {
         manifest_path: PathBuf,
-        table: &'static str,
+        table: SettingsTable,
         source: serde_json::Error,
     },
 

@@ -36,7 +36,7 @@ pub struct Report {
 }
 
 /// Files that the rules check with the same settings.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct FileGroup {
     pub check_config: CheckConfig,
     pub source_files: Vec<SourceFile>,
@@ -85,7 +85,7 @@ pub fn check(file_groups: Vec<FileGroup>) -> Result<Report, Error> {
     let mut num_files_checked = 0;
     let mut num_generated_files = 0;
     for file_group in file_groups {
-        let mut file_checker = FileChecker::new(&file_group.check_config);
+        let mut file_checker = FileChecker::new(file_group.check_config);
         for source_file in &file_group.source_files {
             let source_text =
                 fs::read_to_string(&source_file.path).map_err(|source| Error::Io {
@@ -132,14 +132,14 @@ impl FileChecker {
     /// # Returns
     ///
     /// A checker with the rules and settings of `check_config`.
-    fn new(check_config: &CheckConfig) -> Self {
+    fn new(check_config: CheckConfig) -> Self {
         Self {
-            rule_set: check_config.rule_set.clone(),
             rules: RuleId::ALL
                 .into_iter()
                 .filter(|rule_id| check_config.rule_set.contains(*rule_id))
-                .map(|rule_id| Rule::new(rule_id, check_config))
+                .map(|rule_id| Rule::new(rule_id, &check_config))
                 .collect(),
+            rule_set: check_config.rule_set,
             test_module_cache: TestModuleCache::default(),
         }
     }
@@ -187,7 +187,7 @@ mod tests {
     use crate::diagnostic::DiagnosticKind;
 
     fn file_checker(rule_set: RuleSet) -> FileChecker {
-        FileChecker::new(&CheckConfig {
+        FileChecker::new(CheckConfig {
             rule_set,
             width: Width::DEFAULT,
             include_tests: false,

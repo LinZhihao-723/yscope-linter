@@ -63,7 +63,7 @@ pub fn cargo_main() -> ExitCode {
     print_warnings(&cargo_args.warnings());
     let config = cargo_args.into_config();
     let format = config.format;
-    let plan = match cargo::Plan::new(config) {
+    let plan = match cargo::Plan::new(&config) {
         Ok(plan) => plan,
         Err(error) => return report_fatal_error(&error),
     };
@@ -74,6 +74,7 @@ pub fn cargo_main() -> ExitCode {
     }
 }
 
+/// Prints each of `warnings` to stderr.
 fn print_warnings(warnings: &[String]) {
     for warning in warnings {
         eprintln!("yscope-linter: warning: {warning}");

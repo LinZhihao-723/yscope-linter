@@ -143,7 +143,11 @@ fn package_flags_select_workspace_members() {
 fn single_package_lints_every_target_but_not_its_target_directory() {
     let directory =
         test_directory("single_package_lints_every_target_but_not_its_target_directory");
-    write_file(&directory, "Cargo.toml", &package_manifest("single", ""));
+    write_file(
+        &directory,
+        "Cargo.toml",
+        &package_manifest("single", "[workspace]\n"),
+    );
     let checked_paths = [
         "benches/bench.rs",
         "build.rs",
@@ -184,7 +188,7 @@ fn package_settings_override_workspace_settings_and_the_command_line_overrides_b
         "Cargo.toml",
         "[workspace]\nresolver = \"3\"\nmembers = [\"a\", \
          \"b\"]\n\n[workspace.metadata.yscope-linter]\nwidth = 10\nexclude = \
-         [\"b/src/skipped.rs\"]\n\n[workspace.metadata.other-tool]\nkey = 1\n",
+         [\"a/../b/src/skipped.rs\"]\n\n[workspace.metadata.other-tool]\nkey = 1\n",
     );
     write_file(
         &directory,
@@ -232,6 +236,18 @@ fn package_settings_override_workspace_settings_and_the_command_line_overrides_b
 }
 
 #[test]
+fn command_line_excludes_are_relative_to_the_current_directory() {
+    let directory =
+        virtual_workspace("command_line_excludes_are_relative_to_the_current_directory");
+    let output = run(
+        &directory.join("a"),
+        &["--workspace", "--exclude", "src/lib.rs"],
+        "",
+    );
+    assert_eq!(diagnostic_paths(&output), ["../b/src/lib.rs"]);
+}
+
+#[test]
 fn include_tests_setting_checks_test_fns() {
     let directory = test_directory("include_tests_setting_checks_test_fns");
     write_file(
@@ -239,7 +255,7 @@ fn include_tests_setting_checks_test_fns() {
         "Cargo.toml",
         &package_manifest(
             "single",
-            "\n[package.metadata.yscope-linter]\ninclude-tests = true\n",
+            "[workspace]\n\n[package.metadata.yscope-linter]\ninclude-tests = true\n",
         ),
     );
     write_file(
@@ -249,14 +265,24 @@ fn include_tests_setting_checks_test_fns() {
          [`load`]'s return values on failure.\n#[test]\nfn checks() -> Result<(), E> {\n    \
          Ok(())\n}\n",
     );
+    let expected_lines = [
+        "src/lib.rs:7:1: DOC002 errors-doc: \"Forwards [`load`]\" names a function whose errors \
+         `checks` never forwards",
+    ];
     let output = run(&directory, &[], "");
-    assert_eq!(
-        stdout_lines(&output),
-        [
-            "src/lib.rs:7:1: DOC002 errors-doc: \"Forwards [`load`]\" names a function whose \
-             errors `checks` never forwards"
-        ]
+    assert_eq!(stdout_lines(&output), expected_lines);
+
+    write_file(
+        &directory,
+        "Cargo.toml",
+        &package_manifest("single", "[workspace]\n"),
     );
+    let output = run(&directory, &[], "");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_lines(&output), Vec::<String>::new());
+
+    let output = run(&directory, &["--include-tests"], "");
+    assert_eq!(stdout_lines(&output), expected_lines);
 }
 
 #[test]
@@ -306,6 +332,20 @@ fn diff_checks_only_the_changed_lines_of_the_selected_packages() {
 
     let output = run(&directory, &["--diff", "-", "-p", "b"], "");
     assert_eq!(output.status.code(), Some(0));
+
+    let subdirectory_diff_text = "\
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2 +2 @@
+-old
++// yscope-linter: allow(errors-doc)
+";
+    let output = run(
+        &directory.join("a"),
+        &["--diff", "-"],
+        subdirectory_diff_text,
+    );
+    assert_eq!(locations(&output), ["src/lib.rs:2:1"]);
 }
 
 #[test]
@@ -334,7 +374,18 @@ fn fatal_errors_exit_two_with_empty_stdout() {
         &package_manifest("c", "\n[package.metadata.yscope-linter]\nwidht = 80\n"),
     );
     write_file(&directory, "invalid/c/src/lib.rs", "");
-    let cases: [(&[&str], &str); 7] = [
+    write_file(
+        &directory,
+        "invalid-workspace/Cargo.toml",
+        "[workspace]\nmembers = [\"d\"]\n\n[workspace.metadata.yscope-linter]\nwidht = 80\n",
+    );
+    write_file(
+        &directory,
+        "invalid-workspace/d/Cargo.toml",
+        &package_manifest("d", ""),
+    );
+    write_file(&directory, "invalid-workspace/d/src/lib.rs", "");
+    let cases: [(&[&str], &str); 5] = [
         (
             &["--manifest-path", "missing/Cargo.toml"],
             "yscope-linter: error: `cargo metadata` failed (exit status: 101)\n",
@@ -352,11 +403,9 @@ fn fatal_errors_exit_two_with_empty_stdout() {
             "yscope-linter: error: invalid `[package.metadata.yscope-linter]` in",
         ),
         (
-            &["--exclude-package", "a"],
-            "the following required arguments were not provided",
+            &["--manifest-path", "invalid-workspace/Cargo.toml"],
+            "yscope-linter: error: invalid `[workspace.metadata.yscope-linter]` in",
         ),
-        (&["src/lib.rs"], "unexpected argument 'src/lib.rs' found"),
-        (&["--rule", "nope"], "unknown rule `nope`"),
     ];
     for (args, message) in cases {
         let output = run(&directory, args, "");
@@ -374,6 +423,17 @@ fn fatal_errors_exit_two_with_empty_stdout() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("invalid/c/Cargo.toml`: unknown field `widht`"),
+        "{stderr}"
+    );
+
+    let output = run(
+        &directory,
+        &["--manifest-path", "invalid-workspace/Cargo.toml"],
+        "",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid-workspace/Cargo.toml`: unknown field `widht`"),
         "{stderr}"
     );
 

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::cargo::Settings;
+use crate::cargo::SettingsTable;
 use crate::cargo::metadata::Workspace;
 use crate::config::CargoConfig;
 use crate::diff;
@@ -18,7 +19,7 @@ use crate::source::LineFilter;
 use crate::source::SourceFile;
 
 /// The files a `cargo yscope-linter` run checks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Plan {
     /// One group per selected package, with the package's settings.
     pub file_groups: Vec<FileGroup>,
@@ -56,7 +57,7 @@ impl Plan {
     /// * Forwards [`diff::parse`]'s return values on failure.
     /// * Forwards [`Settings::from_table`]'s return values on failure.
     /// * Forwards [`source::walk_directory`]'s return values on failure.
-    pub fn new(config: CargoConfig) -> Result<Self, Error> {
+    pub fn new(config: &CargoConfig) -> Result<Self, Error> {
         let current_directory = std::env::current_dir().map_err(|source| Error::Io {
             path: PathBuf::from("."),
             source,
@@ -80,41 +81,34 @@ impl Plan {
         let workspace_manifest_path = workspace.manifest_path();
         let workspace_settings = Settings::from_table(
             workspace.settings_table(),
-            Settings::WORKSPACE_TABLE,
+            SettingsTable::Workspace,
             &workspace_manifest_path,
-        )?
-        .rebased(&workspace.root);
-        let mut warnings = deprecation_warnings(
-            &workspace_settings,
-            Settings::WORKSPACE_TABLE,
-            &workspace_manifest_path,
-        );
-        let overrides = config.overrides.rebased(&current_directory);
+        )?;
+        let mut warnings = workspace_settings
+            .deprecation_warnings(SettingsTable::Workspace, &workspace_manifest_path);
 
         let mut file_groups = Vec::new();
         for package in packages {
-            let package_directory = resolve(&current_directory, package.directory());
             let package_settings = Settings::from_table(
                 package.settings_table(),
-                Settings::PACKAGE_TABLE,
+                SettingsTable::Package,
                 &package.manifest_path,
-            )?
-            .rebased(&package_directory);
-            warnings.extend(deprecation_warnings(
-                &package_settings,
-                Settings::PACKAGE_TABLE,
-                &package.manifest_path,
-            ));
+            )?;
+            warnings.extend(
+                package_settings
+                    .deprecation_warnings(SettingsTable::Package, &package.manifest_path),
+            );
             let settings = workspace_settings
                 .clone()
                 .overridden_by(package_settings)
-                .overridden_by(overrides.clone());
+                .overridden_by(config.overrides.clone());
             let excludes: Vec<PathBuf> = settings
                 .excludes
                 .iter()
                 .map(|exclude| resolve(&current_directory, exclude))
                 .collect();
 
+            let package_directory = resolve(&current_directory, package.manifest_path.directory());
             let mut walked_files = Vec::new();
             source::walk_directory(&package_directory, &is_skipped, &mut walked_files)?;
             let source_files = walked_files
@@ -143,25 +137,6 @@ impl Plan {
             warnings,
         })
     }
-}
-
-/// # Returns
-///
-/// A warning for each deprecated rule that the `rules` setting of `table` in the `Cargo.toml` at
-/// `manifest_path` names.
-fn deprecation_warnings(settings: &Settings, table: &str, manifest_path: &Path) -> Vec<String> {
-    settings
-        .deprecated_rule_ids()
-        .into_iter()
-        .map(|rule_id| {
-            format!(
-                "`{rule_id}` ({}) is deprecated and never runs; remove it from `rules` in \
-                 `{table}` of `{}`",
-                rule_id.code(),
-                manifest_path.display()
-            )
-        })
-        .collect()
 }
 
 /// Joins `path` to `base_directory` and resolves its `.` and `..` components lexically.

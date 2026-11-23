@@ -289,6 +289,33 @@ fn diff_input_selects_changed_lines_and_respects_excludes() {
 }
 
 #[test]
+fn diff_with_non_utf8_content_lines_selects_its_changed_lines() {
+    let directory = test_directory("diff_with_non_utf8_content_lines_selects_its_changed_lines");
+    write_file(&directory, "a.rs", INVALID_SUPPRESSION);
+    let diff_bytes = [
+        b"--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old \xff\n+".as_slice(),
+        INVALID_SUPPRESSION.as_bytes(),
+    ]
+    .concat();
+    fs::write(directory.join("change.diff"), &diff_bytes).expect("failed to write the diff");
+
+    let output = run(&directory, &["--diff", "change.diff"], "");
+    assert_eq!(output.status.code(), Some(1));
+    let file_lines = stdout_lines(&output);
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_yscope-linter"));
+    command.args(["--diff", "-"]);
+    let output = support::run_command(command, &directory, &diff_bytes);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout_lines(&output), file_lines);
+    assert_eq!(file_lines.len(), 1, "{file_lines:?}");
+    assert!(
+        file_lines[0].starts_with("a.rs:1:1: LNT002 "),
+        "{file_lines:?}"
+    );
+}
+
+#[test]
 fn diff_that_deletes_a_forwards_bullet_reports_the_missing_forward() {
     let directory =
         test_directory("diff_that_deletes_a_forwards_bullet_reports_the_missing_forward");
