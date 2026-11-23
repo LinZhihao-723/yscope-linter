@@ -108,15 +108,16 @@ The rule checks each of these scopes on its own:
 The order of items in a trait declaration or a trait impl block isn't checked, and neither are items
 declared inside a fn body.
 
-Test code is skipped unless you pass `--include-tests`, as for [`errors-doc`](errors-doc.md):
+Test code is checked by default. With `--skip-tests`, or `skip-tests = true` in the [`Cargo.toml`
+settings](../../README.md#settings), it is skipped, as for [`errors-doc`](errors-doc.md):
 
 * Any item marked `#[cfg(test)]` or `#[cfg(all(test, ..))]`, such as a `mod tests` block, and
   everything inside it.
 * A fn with an attribute whose last path segment is `test`, such as `#[test]` or `#[tokio::test]`.
 * A module file whose parent declares it with `#[cfg(test)] mod tests;`.
 
-A skipped item is neither checked nor counted, like an [exempt item](#exempt-items). With
-`--include-tests`, test items are ordered like any other item, and the body of a `#[cfg(test)] mod
+A skipped item is neither checked nor counted, like an [exempt item](#exempt-items). Without
+`--skip-tests`, test items are ordered like any other item, and the body of a `#[cfg(test)] mod
 tests` block is checked as a module.
 
 ## The order in a module

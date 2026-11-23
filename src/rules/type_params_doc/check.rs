@@ -13,7 +13,7 @@ use crate::syntax::doc_items::DocItemKind;
 /// Checks the `# Type Parameters` sections of the items in each file of a run.
 #[derive(Debug)]
 pub struct Checker {
-    include_tests: bool,
+    skip_tests: bool,
 }
 
 impl Checker {
@@ -21,9 +21,9 @@ impl Checker {
     ///
     /// # Returns
     ///
-    /// A checker that also checks `#[test]` fns and `#[cfg(test)]` items if `include_tests` is set.
-    pub const fn new(include_tests: bool) -> Self {
-        Self { include_tests }
+    /// A checker that skips `#[test]` fns and `#[cfg(test)]` items if `skip_tests` is set.
+    pub const fn new(skip_tests: bool) -> Self {
+        Self { skip_tests }
     }
 
     /// Checks every documented item of one file but its trait impl methods:
@@ -33,7 +33,7 @@ impl Checker {
     /// * An item without generic parameters must not have one.
     ///
     /// The file is skipped if it failed to lex or to parse, or if it is an out-of-line
-    /// `#[cfg(test)]` module and tests aren't included.
+    /// `#[cfg(test)]` module and tests are skipped.
     ///
     /// # Returns
     ///
@@ -44,10 +44,10 @@ impl Checker {
         let Some(syntax_tree) = context.syntax_tree(RuleId::TypeParamsDoc) else {
             return Vec::new();
         };
-        if !self.include_tests && context.is_test_module(RuleId::TypeParamsDoc) {
+        if self.skip_tests && context.is_test_module(RuleId::TypeParamsDoc) {
             return Vec::new();
         }
-        doc_items::collect(syntax_tree, self.include_tests)
+        doc_items::collect(syntax_tree, self.skip_tests)
             .iter()
             .filter(|doc_item| !matches!(doc_item.kind, DocItemKind::TraitImplMethod(_)))
             .flat_map(|doc_item| {
@@ -132,8 +132,8 @@ mod tests {
     /// # Panics
     ///
     /// Panics if `source_text` doesn't parse.
-    fn checked(source_text: &str, include_tests: bool) -> Vec<String> {
-        diagnostics(source_text, include_tests)
+    fn checked(source_text: &str, skip_tests: bool) -> Vec<String> {
+        diagnostics(source_text, skip_tests)
             .iter()
             .map(|diagnostic| {
                 let position = diagnostic.position();
@@ -147,7 +147,7 @@ mod tests {
             .collect()
     }
 
-    fn diagnostics(source_text: &str, include_tests: bool) -> Vec<Diagnostic> {
+    fn diagnostics(source_text: &str, skip_tests: bool) -> Vec<Diagnostic> {
         syn::parse_file(source_text).expect("valid file");
         let test_module_cache = TestModuleCache::default();
         let context = FileContext::new(
@@ -155,7 +155,7 @@ mod tests {
             source_text,
             &test_module_cache,
         );
-        let mut diagnostics = Checker::new(include_tests).check(&context);
+        let mut diagnostics = Checker::new(skip_tests).check(&context);
         diagnostics.sort_by_key(Diagnostic::position);
         diagnostics
     }
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn test_code_is_checked_only_with_include_tests() {
+    fn test_code_is_checked_unless_tests_are_skipped() {
         let source_text = concat!(
             "/// A.\n",
             "#[test]\n",
@@ -380,9 +380,9 @@ mod tests {
             "    struct Fixture<T>(T);\n",
             "}\n",
         );
-        assert_eq!(checked(source_text, false), NO_FINDINGS);
+        assert_eq!(checked(source_text, true), NO_FINDINGS);
         assert_eq!(
-            checked(source_text, true),
+            checked(source_text, false),
             [
                 "1:1: fn `unit_test` has generic parameters but no `# Type Parameters` section; \
                  add one with a bullet for each of `T`",

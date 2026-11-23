@@ -190,7 +190,7 @@ mod tests {
         FileChecker::new(CheckConfig {
             rule_set,
             width: Width::DEFAULT,
-            include_tests: false,
+            skip_tests: false,
         })
     }
 

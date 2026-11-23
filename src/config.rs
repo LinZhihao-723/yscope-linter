@@ -40,7 +40,7 @@ pub struct CargoConfig {
 pub struct CheckConfig {
     pub rule_set: RuleSet,
     pub width: Width,
-    pub include_tests: bool,
+    pub skip_tests: bool,
 }
 
 /// The workspace members a `cargo yscope-linter` run lints, selected as cargo selects them.

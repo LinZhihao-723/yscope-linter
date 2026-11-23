@@ -43,8 +43,8 @@ pub struct Entry<KeyType> {
 pub struct EntryCollector<'file> {
     pub crate_names: &'file CrateNames,
 
-    /// Whether `#[cfg(test)]` items and `#[test]` fns are counted rather than exempt.
-    pub include_tests: bool,
+    /// Whether `#[cfg(test)]` items and `#[test]` fns are exempt rather than counted.
+    pub skip_tests: bool,
 }
 
 impl EntryCollector<'_> {
@@ -107,9 +107,9 @@ impl EntryCollector<'_> {
     /// # Returns
     ///
     /// Whether an item with `attrs` is test code that isn't counted or checked: an item with
-    /// `#[cfg(test)]`, or a fn with a `#[test]`-like attribute, unless tests are included.
+    /// `#[cfg(test)]`, or a fn with a `#[test]`-like attribute, if tests are skipped.
     pub fn is_skipped(&self, attrs: &[syn::Attribute], is_fn: bool) -> bool {
-        !self.include_tests && test_code::is_test_item(attrs, is_fn)
+        self.skip_tests && test_code::is_test_item(attrs, is_fn)
     }
 
     /// Finds the structs, enums and unions of a module that impl blocks can belong to.

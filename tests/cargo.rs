@@ -7,6 +7,7 @@ use std::process::Command;
 use std::process::Output;
 
 use support::INVALID_SUPPRESSION;
+use support::TEST_FN_WITH_A_STALE_FORWARD;
 use support::stdout_lines;
 use support::test_directory;
 use support::write_file;
@@ -251,41 +252,40 @@ fn command_line_excludes_are_relative_to_the_current_directory() {
 }
 
 #[test]
-fn include_tests_setting_checks_test_fns() {
-    let directory = test_directory("include_tests_setting_checks_test_fns");
-    write_file(
-        &directory,
-        "Cargo.toml",
-        &package_manifest(
-            "single",
-            "[workspace]\n\n[package.metadata.yscope-linter]\ninclude-tests = true\n",
-        ),
-    );
-    write_file(
-        &directory,
-        "src/lib.rs",
-        "/// Checks.\n///\n/// # Errors\n///\n/// Returns an error if:\n///\n/// * Forwards \
-         [`load`]'s return values on failure.\n#[test]\nfn checks() -> Result<(), E> {\n    \
-         Ok(())\n}\n",
-    );
+fn command_line_overrides_the_skip_tests_setting_either_way() {
+    let directory = test_directory("command_line_overrides_the_skip_tests_setting_either_way");
+    let write_settings = |settings: &str| {
+        write_file(
+            &directory,
+            "Cargo.toml",
+            &package_manifest(
+                "single",
+                &format!("[workspace]\n\n[package.metadata.yscope-linter]\n{settings}"),
+            ),
+        );
+    };
+    write_file(&directory, "src/lib.rs", TEST_FN_WITH_A_STALE_FORWARD);
     let expected_lines = [
         "src/lib.rs:7:1: DOC002 errors-doc: \"Forwards [`load`]\" names a function whose errors \
          `checks` never forwards",
     ];
+    write_settings("");
     let output = run(&directory, &[], "");
     assert_eq!(stdout_lines(&output), expected_lines);
 
-    write_file(
-        &directory,
-        "Cargo.toml",
-        &package_manifest("single", "[workspace]\n"),
-    );
+    write_settings("skip-tests = true\n");
     let output = run(&directory, &[], "");
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout_lines(&output), Vec::<String>::new());
-
-    let output = run(&directory, &["--include-tests"], "");
+    let output = run(&directory, &["--no-skip-tests"], "");
     assert_eq!(stdout_lines(&output), expected_lines);
+
+    write_settings("skip-tests = false\n");
+    let output = run(&directory, &[], "");
+    assert_eq!(stdout_lines(&output), expected_lines);
+    let output = run(&directory, &["--skip-tests"], "");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_lines(&output), Vec::<String>::new());
 }
 
 #[test]

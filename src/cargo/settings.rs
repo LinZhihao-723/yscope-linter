@@ -20,7 +20,7 @@ use crate::rules::RuleSelector;
 pub struct Settings {
     pub rule_selectors: Option<Vec<RuleSelector>>,
     pub width: Option<Width>,
-    pub include_tests: Option<bool>,
+    pub skip_tests: Option<bool>,
 
     /// The files and directories to skip, which add up across sources instead of overriding.
     pub excludes: Vec<PathBuf>,
@@ -57,7 +57,7 @@ impl Settings {
         Ok(Self {
             rule_selectors: raw_settings.rules,
             width: raw_settings.width.map(Width::new),
-            include_tests: raw_settings.include_tests,
+            skip_tests: raw_settings.skip_tests,
             excludes: raw_settings
                 .exclude
                 .into_iter()
@@ -75,7 +75,7 @@ impl Settings {
         Self {
             rule_selectors: overrides.rule_selectors.or(self.rule_selectors),
             width: overrides.width.or(self.width),
-            include_tests: overrides.include_tests.or(self.include_tests),
+            skip_tests: overrides.skip_tests.or(self.skip_tests),
             excludes: self.excludes,
         }
     }
@@ -105,7 +105,7 @@ impl Settings {
     /// # Returns
     ///
     /// The settings to check files with: the set ones, and the defaults of every rule, a width of
-    /// 100 and no test code for the others.
+    /// 100 and checked test code for the others.
     pub fn check_config(&self) -> CheckConfig {
         CheckConfig {
             rule_set: self
@@ -118,7 +118,7 @@ impl Settings {
                         .collect()
                 }),
             width: self.width.unwrap_or(Width::DEFAULT),
-            include_tests: self.include_tests.unwrap_or(false),
+            skip_tests: self.skip_tests.unwrap_or(false),
         }
     }
 }
@@ -144,11 +144,11 @@ impl fmt::Display for SettingsTable {
 #[serde(
     deny_unknown_fields,
     rename_all = "kebab-case",
-    expecting = "a table with the keys `width`, `include-tests`, `exclude` and `rules`"
+    expecting = "a table with the keys `width`, `skip-tests`, `exclude` and `rules`"
 )]
 struct RawSettings {
     width: Option<NonZeroUsize>,
-    include_tests: Option<bool>,
+    skip_tests: Option<bool>,
 
     #[serde(default)]
     exclude: Vec<PathBuf>,
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn table_sets_each_setting_and_excludes_are_relative_to_the_manifest() {
         let settings = parsed(
-            r#"{"width": 80, "include-tests": true, "exclude": ["src/gen", "../b", "/abs"],
+            r#"{"width": 80, "skip-tests": true, "exclude": ["src/gen", "../b", "/abs"],
                 "rules": ["errors-doc"]}"#,
         )
         .expect("valid settings");
@@ -198,7 +198,7 @@ mod tests {
             Settings {
                 rule_selectors: Some(vec![RuleSelector::Rule(RuleId::ErrorsDoc)]),
                 width: Some(width(80)),
-                include_tests: Some(true),
+                skip_tests: Some(true),
                 excludes: ["/ws/a/src/gen", "/ws/a/../b", "/abs"]
                     .map(PathBuf::from)
                     .to_vec(),
@@ -245,7 +245,7 @@ mod tests {
         let workspace_settings = Settings {
             rule_selectors: Some(vec![RuleSelector::Rule(RuleId::ErrorsDoc)]),
             width: Some(width(80)),
-            include_tests: Some(true),
+            skip_tests: Some(true),
             excludes: vec![PathBuf::from("/ws/w")],
         };
         let package_settings = Settings {
@@ -265,7 +265,7 @@ mod tests {
             Settings {
                 rule_selectors: Some(vec![RuleSelector::Rule(RuleId::SymbolOrder)]),
                 width: Some(width(90)),
-                include_tests: Some(true),
+                skip_tests: Some(true),
                 excludes: vec![PathBuf::from("/ws/w"), PathBuf::from("/ws/a/p")],
             }
         );
@@ -274,8 +274,31 @@ mod tests {
             CheckConfig {
                 rule_set: RuleSet::all(),
                 width: Width::DEFAULT,
-                include_tests: false,
+                skip_tests: false,
             }
         );
+    }
+
+    #[test]
+    fn skip_tests_is_overridden_in_both_directions() {
+        let settings = |skip_tests: Option<bool>| Settings {
+            skip_tests,
+            ..Settings::default()
+        };
+        for (workspace_skip_tests, package_skip_tests, cli_skip_tests, expected) in [
+            (Some(true), Some(false), None, false),
+            (Some(false), Some(true), None, true),
+            (None, Some(true), Some(false), false),
+            (Some(false), None, Some(true), true),
+        ] {
+            let check_config = settings(workspace_skip_tests)
+                .overridden_by(settings(package_skip_tests))
+                .overridden_by(settings(cli_skip_tests))
+                .check_config();
+            assert_eq!(
+                check_config.skip_tests, expected,
+                "{workspace_skip_tests:?} {package_skip_tests:?} {cli_skip_tests:?}"
+            );
+        }
     }
 }

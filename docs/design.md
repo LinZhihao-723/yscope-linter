@@ -119,7 +119,7 @@ Entry and configuration:
 * `src/config.rs`: `LintConfig`, with the `CheckConfig`, the targets, the diff input, the excludes
   and the `OutputFormat`; `CargoConfig`, with the manifest path, the `PackageSelection`, the
   command-line `Settings`, the diff input and the `OutputFormat`; and `CheckConfig`, the enabled
-  `RuleSet`, the `Width` and `include_tests` that the rules check a file with.
+  `RuleSet`, the `Width` and `skip_tests` that the rules check a file with.
 * `src/error.rs`: the fatal `Error` enum (I/O, invalid arguments, invalid diff, cargo failures,
   invalid settings, unknown packages), with a hand-written `Display` and `Error`.
 
@@ -317,7 +317,7 @@ stray `.rs` file in a package, is linted as well.
 ### Settings
 
 `settings::Settings` holds the settings that one source gives, each `None` when the source leaves it
-unset: `rule_selectors`, `width`, `include_tests`, and the `excludes`, which are always a list.
+unset: `rule_selectors`, `width`, `skip_tests`, and the `excludes`, which are always a list.
 
 * `Settings::from_table` parses a `metadata.yscope-linter` table into `RawSettings`, a serde struct
   with `deny_unknown_fields` and kebab-case keys. The table is first kept as a `serde_json::Value`
@@ -333,10 +333,18 @@ unset: `rule_selectors`, `width`, `include_tests`, and the `excludes`, which are
 * `overridden_by` keeps each setting of the overriding source when it is set, and appends the
   excludes. `Plan::new` folds the workspace's settings, the package's and the command line's in that
   order, and `check_config` fills the unset ones with the defaults: every rule, `Width::DEFAULT` and
-  no test code.
+  checked test code.
 
-The command line's `--include-tests` is a flag, so it is `Some(true)` or `None`: it can turn test
-checking on over a setting, but not off.
+The command line sets `skip_tests` with a pair of flags, the clap idiom for a boolean that can be
+set both ways:
+
+* `--skip-tests` gives `Some(true)`, `--no-skip-tests` gives `Some(false)`, and neither gives
+  `None`. So the command line overrides a `skip-tests` setting in both directions.
+* The two flags override each other with clap's `overrides_with`, so the last one given wins.
+* `--include-tests`, from when test code was skipped by default, is a hidden flag that has no
+  effect. `LintOptions::warnings` warns about it, as about a deprecated rule in `--rule`.
+* The `include-tests` setting of the unreleased cargo integration isn't accepted. It is an unknown
+  key, whose error lists `skip-tests`.
 
 The path mode never reads `Cargo.toml`. Both command lines turn their shared `SettingsOptions` into
 `Settings` with the same `From` impl, and `Cli::into_config` builds its `CheckConfig` through
@@ -396,7 +404,7 @@ Every rule is reached through `src/rules/registry.rs`:
 The checkers keep no state across files. The cache of [out-of-line test
 module](#out-of-line-test-modules) verdicts is shared by every rule, so `FileChecker` owns it and
 lends it to each file's `FileContext`. `TestModuleCache` keeps its interior mutability private. The
-`comment-greedy-wrap` checker holds the width, and the other checkers hold `include_tests`.
+`comment-greedy-wrap` checker holds the width, and the other checkers hold `skip_tests`.
 
 ### Codes and selectors
 
@@ -448,10 +456,9 @@ rule that is deprecated.
    this document.
 
 A rule reads the file only through its `FileContext`. When `syntax_tree` returns `None`, the rule
-checks nothing; the context reports the `parse-error`. A rule that skips test code by default asks
-`is_test_module` unless `--include-tests` is set, and checks nothing for a test module.
-Rule-agnostic helpers belong in `src/syntax/` and `src/doc/`, next to `src/lexer.rs` and
-`src/markdown/`.
+checks nothing; the context reports the `parse-error`. A rule that can skip test code asks
+`is_test_module` only with `--skip-tests`, and checks nothing for a test module. Rule-agnostic
+helpers belong in `src/syntax/` and `src/doc/`, next to `src/lexer.rs` and `src/markdown/`.
 
 ### Deprecating a rule
 
@@ -845,7 +852,7 @@ The model has three parts:
 `errors_doc::Checker::check` runs these stages on each file:
 
 1. It gets the syntax tree from the `FileContext`, or checks nothing.
-2. Unless `--include-tests`, it asks the `FileContext` whether the file is an [out-of-line test
+2. With `--skip-tests`, it asks the `FileContext` whether the file is an [out-of-line test
    module](#out-of-line-test-modules). A test module is skipped. A declaring file that can't be read
    or parsed gives a `parse-error` at line 1, and the file is checked unless another candidate marks
    it as a test module.
@@ -874,9 +881,9 @@ holding the self names, the generic type parameters, and whether its fns are ass
 * `visit_item_fn`, `visit_impl_item_fn` and `visit_trait_item_fn` record the fn, then recurse into
   its body in a fresh, non-associated context. So nested fns, impls and modules are checked on their
   own, while the body scanner never enters them.
-* Unless `--include-tests`, every item with `#[cfg(test)]` (or a `cfg(all(..))` that requires
-  `test`) is skipped without recursion, and so is a fn with an attribute whose last segment is
-  `test` (`#[test]`, `#[tokio::test]`).
+* With `--skip-tests`, every item with `#[cfg(test)]` (or a `cfg(all(..))` that requires `test`) is
+  skipped without recursion, and so is a fn with an attribute whose last segment is `test`
+  (`#[test]`, `#[tokio::test]`).
 
 A fn is collected when its return type is a `Type::Path` whose last segment ends with `Result`
 (`Result`, `io::Result`, `DbResult`), which covers `async fn`. A return type of `impl Future<Output
@@ -1601,11 +1608,11 @@ example ``fn `load` ``):
 The order of the bullets isn't checked against the order of the parameters.
 
 `syntax/doc_items.rs` walks the items both rules look at. `doc_items::collect(syntax_tree,
-include_tests)` returns a `DocItem` (kind, name, attributes and `ItemLines`) for every fn, struct,
+skip_tests)` returns a `DocItem` (kind, name, attributes and `ItemLines`) for every fn, struct,
 enum, union, trait and type alias, including the ones nested in modules and fn bodies. Its
 `DocItemKind` tells free fns, inherent methods, trait impl methods and trait method declarations
 apart, and each kind carries the item's signature if it is a fn, or its generics otherwise.
-`DocItem::generics` gives the item's own generics either way. Unless `include_tests`, it skips
+`DocItem::generics` gives the item's own generics either way. With `skip_tests`, it skips
 `#[cfg(test)]` items with everything in them and fns with a `test` attribute, as the `errors-doc`
 item walk does. Both rules check only documented items: `doc_lines::collect_documented` gives an
 item's doc lines only when at least one of them is non-blank.
@@ -1628,11 +1635,11 @@ The rule checks two kinds of scopes, each on its own:
 Trait impl blocks and trait declarations aren't checked inside. Their item order follows the trait
 or rustfmt's `reorder_impl_items`.
 
-Unless `--include-tests`, an out-of-line test module file is skipped, as
-`FileContext::is_test_module` decides, and so is every item with `#[cfg(test)]` (or a `cfg(all(..))`
-that requires `test`), including whole `mod tests` blocks and inherent impl blocks, and every fn
-with a `#[test]`-like attribute, as `doc_items` skips them. With `--include-tests`, those items are
-counted like any other, and the body of a `#[cfg(test)] mod tests` is checked as a module.
+With `--skip-tests`, an out-of-line test module file is skipped, as `FileContext::is_test_module`
+decides, and so is every item with `#[cfg(test)]` (or a `cfg(all(..))` that requires `test`),
+including whole `mod tests` blocks and inherent impl blocks, and every fn with a `#[test]`-like
+attribute, as `doc_items` skips them. Without `--skip-tests`, those items are counted like any
+other, and the body of a `#[cfg(test)] mod tests` is checked as a module.
 
 In a module, these items are exempt: they are neither checked nor counted, so they may sit anywhere,
 and the items around them are compared as if they weren't there.
@@ -1761,8 +1768,7 @@ aliases. Not checked:
   parameters.
 * An item without a docstring. Like `errors-doc`, which skips a fn without an `# Errors` section,
   the rule only checks docstrings that exist.
-* Test code, unless `--include-tests`, as `doc_items::collect` and `FileContext::is_test_module`
-  decide.
+* Test code, with `--skip-tests`, as `doc_items::collect` and `FileContext::is_test_module` decide.
 
 An item's generic parameters are its own `Generics::params`, in declaration order:
 
@@ -1792,7 +1798,7 @@ guide ("`# Parameters` only in trait declarations"): a trait declaration documen
 parameters, and nothing else has a `# Parameters` section. The heading is `# Parameters`, as the
 guides and the existing uses in CLP and Spider write it; `# Arguments` isn't recognized.
 
-Checked items, from `doc_items::collect`, documented, and not test code unless `--include-tests`:
+Checked items, from `doc_items::collect`, documented, and not test code with `--skip-tests`:
 
 * Trait method declarations, with or without a default body.
 * For the reverse check, every other item `doc_items::collect` returns: free fns, inherent methods,
@@ -1986,7 +1992,8 @@ fn or comment it belonged to, and the anchor spans cover the rest.
   rule](#deprecating-a-rule).
 * `tests/cli.rs` runs the built binary (`CARGO_BIN_EXE_yscope-linter`) on files each test writes
   under `CARGO_TARGET_TMPDIR`. It covers the output format and order, exit codes, the directory
-  walk, `@generated` skipping, `--rule`, `--exclude`, `--diff -` and `--diff <FILE>`, including a
+  walk, `@generated` skipping, `--rule`, `--exclude`, the checked test code, `--skip-tests` and
+  `--no-skip-tests`, the warning of `--include-tests`, `--diff -` and `--diff <FILE>`, including a
   diff that isn't UTF-8, `--format github` and `--version`.
 * `cargo/metadata.rs` tests the package selection and the rejected manifest paths on hand-written
   `cargo metadata` output, `cargo/settings.rs` the parsing, the error context and the precedence of
@@ -1996,12 +2003,12 @@ fn or comment it belonged to, and the anchor spans cover the rest.
   covers the default selection from the root and from a member, `-p`, `--workspace` and
   `--exclude-package`, a single package's targets and a custom target directory, the files outside
   every package and in nested packages, the settings' precedence and relative excludes, including
-  `..` components and command-line excludes from a member directory, `include-tests` and
-  `--include-tests`, `--diff` limited to the selected packages and run from a member directory,
-  relative paths in the GitHub format, and the fatal errors: a failing `cargo metadata`, a missing
-  cargo, an invalid package or workspace setting and an unknown package.
-* The repository lints itself with `yscope-linter src tests` and with
-  `cargo yscope-linter --include-tests`, which must both be clean.
+  `..` components and command-line excludes from a member directory, `skip-tests` overridden by
+  `--skip-tests` and `--no-skip-tests`, `--diff` limited to the selected packages and run from a
+  member directory, relative paths in the GitHub format, and the fatal errors: a failing
+  `cargo metadata`, a missing cargo, an invalid package or workspace setting and an unknown package.
+* The repository lints itself, test code included, with `yscope-linter src tests` and with
+  `cargo yscope-linter`, which must both be clean.
 
 Before a release, run the tool on current y-scope/clp and y-scope/spider and triage every finding as
 a true positive, a false positive (fix the tool, or add it to [Known limits](#known-limits)), or a
@@ -2031,10 +2038,10 @@ What `errors-doc` checks:
 * An `impl Future<Output = ..>` whose `Output` doesn't end in `Result` or whose body doesn't end
   with an `async` block, and `Pin<Box<dyn Future>>` and `Poll<Result>` returns, aren't scanned. For
   example, `components/spider-storage/src/cache/tree/control_block.rs` returns an `Output` alias.
-* Out-of-line test modules declared with `#[path]`, or inside an inline module of the parent, are
-  checked as non-test code.
-* `?` inside `assert!` arguments counts normally. It is rare outside tests, which are skipped by
-  default.
+* With `--skip-tests`, out-of-line test modules declared with `#[path]`, or inside an inline module
+  of the parent, are checked as non-test code.
+* `?` inside `assert!` arguments counts normally. It is rare outside tests, whose fns seldom have an
+  `# Errors` section.
 * The section's wording isn't read, so a section that states the fn never fails gets the intro
   finding when its body has an error source.
 
@@ -2134,10 +2141,10 @@ Cargo mode:
 * Asking for the first word only, and leaving the Markdown check to the reader. A move that turns
   the rest of the line into a block can't be applied, so the rule would ask for a fill it then
   rejects, or worse, one that changes the docs.
-* Dropping the `#[cfg(test)]` skip and `--include-tests`. Test fns and test modules are skipped by
-  default, and the inconsistency between inline and out-of-line modules is fixed by the parent-file
-  lookup instead. Integration test crates under `tests/` are neither, so their helpers stay checked,
-  which is why pattern-taking macros are handled.
+* Dropping the `#[cfg(test)]` skip. It is kept behind `--skip-tests`, and the inconsistency between
+  inline and out-of-line modules is fixed by the parent-file lookup instead. Integration test crates
+  under `tests/` are neither, so their helpers stay checked, which is why pattern-taking macros are
+  handled.
 * Dropping `ForwardList`. It has a real use in
   `components/log-ingestor/src/ingestion_job/sqs_listener.rs`, which would otherwise be an
   unnamed-forward false positive.
@@ -2176,6 +2183,15 @@ Cargo mode:
   module would then drop the workspace's excludes, which can point into any package.
 * Reading `Cargo.toml` settings in the path mode. A path target has no package, and a file's nearest
   `Cargo.toml` isn't necessarily its package's, so the path mode stays free of cargo.
+* Skipping test code by default, with `--include-tests` to check it. The y-scope guides apply to
+  test code too, and a skip that is on by default hides findings that nobody asked to hide.
+* One `--skip-tests[=<BOOL>]` flag with an optional value. The value would need `require_equals`, or
+  `--skip-tests false` would be ambiguous next to the positional `TARGET`s, and a flag pair is the
+  form clap and cargo users know.
+* Keeping `include-tests` as a deprecated setting. No release read it, so there is no `Cargo.toml`
+  to migrate, and a second key for one setting would need its own precedence rule.
+* Making `--include-tests` act as `--no-skip-tests`. No release read settings, so the flag had no
+  setting to override, and as a no-op it keeps the output of every released invocation.
 
 ## Open questions
 

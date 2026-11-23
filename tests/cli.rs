@@ -8,6 +8,7 @@ use std::process::Command;
 use std::process::Output;
 
 use support::INVALID_SUPPRESSION;
+use support::TEST_FN_WITH_A_STALE_FORWARD;
 use support::stdout_lines;
 use support::test_directory;
 use support::write_file;
@@ -132,32 +133,45 @@ fn width_flag_changes_the_fill_threshold() {
 }
 
 #[test]
-fn include_tests_flag_checks_test_fns() {
-    let directory = test_directory("include_tests_flag_checks_test_fns");
-    write_file(
-        &directory,
-        "a.rs",
-        "/// Checks.\n///\n/// # Errors\n///\n/// Returns an error if:\n///\n/// * Forwards \
-         [`load`]'s return values on failure.\n#[test]\nfn checks() -> Result<(), E> {\n    \
-         Ok(())\n}\n",
-    );
+fn test_fns_are_checked_unless_tests_are_skipped() {
+    let directory = test_directory("test_fns_are_checked_unless_tests_are_skipped");
+    write_file(&directory, "a.rs", TEST_FN_WITH_A_STALE_FORWARD);
+    let expected_lines = [
+        "a.rs:7:1: DOC002 errors-doc: \"Forwards [`load`]\" names a function whose errors \
+         `checks` never forwards",
+    ];
     let output = run(&directory, &["a.rs"], "");
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_lines(&output), expected_lines);
 
+    let output = run(&directory, &["--skip-tests", "a.rs"], "");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_lines(&output), Vec::<String>::new());
+
+    let output = run(&directory, &["--skip-tests", "--no-skip-tests", "a.rs"], "");
+    assert_eq!(stdout_lines(&output), expected_lines);
+}
+
+#[test]
+fn include_tests_flag_has_no_effect_but_a_deprecation_warning() {
+    let directory = test_directory("include_tests_flag_has_no_effect_but_a_deprecation_warning");
+    write_file(&directory, "a.rs", TEST_FN_WITH_A_STALE_FORWARD);
     let output = run(&directory, &["--include-tests", "a.rs"], "");
     assert_eq!(
         stdout_lines(&output),
-        [
-            "a.rs:7:1: DOC002 errors-doc: \"Forwards [`load`]\" names a function whose errors \
-             `checks` never forwards"
-        ]
+        stdout_lines(&run(&directory, &["a.rs"], ""))
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "yscope-linter: warning: `--include-tests` is deprecated and has no effect, since test \
+         code is checked by default; remove it\nyscope-linter: 1 diagnostic in 1 file checked, 0 \
+         generated files skipped\n"
     );
 }
 
 #[test]
-fn syntax_tree_rules_skip_out_of_line_test_modules_unless_tests_are_included() {
+fn syntax_tree_rules_skip_out_of_line_test_modules_only_if_tests_are_skipped() {
     let directory =
-        test_directory("syntax_tree_rules_skip_out_of_line_test_modules_unless_tests_are_included");
+        test_directory("syntax_tree_rules_skip_out_of_line_test_modules_only_if_tests_are_skipped");
     write_file(&directory, "src/lib.rs", "#[cfg(test)]\nmod tests;\n");
     write_file(
         &directory,
@@ -173,11 +187,11 @@ fn syntax_tree_rules_skip_out_of_line_test_modules_unless_tests_are_included() {
             "pub fn b() {}\n",
         ),
     );
-    let output = run(&directory, &["src"], "");
+    let output = run(&directory, &["--skip-tests", "src"], "");
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout_lines(&output), Vec::<String>::new());
 
-    let output = run(&directory, &["--include-tests", "src"], "");
+    let output = run(&directory, &["src"], "");
     assert_eq!(
         stdout_lines(&output),
         [
@@ -201,7 +215,7 @@ fn undecidable_test_module_is_one_parse_error_that_names_the_asking_rules() {
                    `#[cfg(test)]` module: syn failed to parse `dir/mod.rs` (cannot parse string \
                    into token stream);";
     assert_eq!(
-        stdout_lines(&run(&directory, &["dir/child.rs"], "")),
+        stdout_lines(&run(&directory, &["--skip-tests", "dir/child.rs"], "")),
         [format!(
             "{problem} errors-doc, symbol-order, trait-params-doc, type-params-doc check it as \
              non-test code"
@@ -210,13 +224,13 @@ fn undecidable_test_module_is_one_parse_error_that_names_the_asking_rules() {
     assert_eq!(
         stdout_lines(&run(
             &directory,
-            &["--rule", "errors-doc", "dir/child.rs"],
+            &["--skip-tests", "--rule", "errors-doc", "dir/child.rs"],
             ""
         )),
         [format!("{problem} errors-doc checks it as non-test code")]
     );
     assert_eq!(
-        stdout_lines(&run(&directory, &["--include-tests", "dir/child.rs"], "")),
+        stdout_lines(&run(&directory, &["dir/child.rs"], "")),
         Vec::<String>::new()
     );
 }

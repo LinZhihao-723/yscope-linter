@@ -33,7 +33,7 @@ use crate::syntax::symbol_path::is_upper_camel_case;
 /// Checks the `# Errors` sections of the fns in each file of a run.
 #[derive(Debug)]
 pub struct Checker {
-    include_tests: bool,
+    skip_tests: bool,
 }
 
 impl Checker {
@@ -41,10 +41,9 @@ impl Checker {
     ///
     /// # Returns
     ///
-    /// A checker that also checks `#[test]` fns and `#[cfg(test)]` modules if `include_tests` is
-    /// set.
-    pub const fn new(include_tests: bool) -> Self {
-        Self { include_tests }
+    /// A checker that skips `#[test]` fns and `#[cfg(test)]` modules if `skip_tests` is set.
+    pub const fn new(skip_tests: bool) -> Self {
+        Self { skip_tests }
     }
 
     /// Checks every checkable fn of one file. A trait fn without a default body only gets the
@@ -55,7 +54,7 @@ impl Checker {
     ///
     /// * The file failed to lex.
     /// * `syn` fails to parse the file. The [`FileContext`] reports a `parse-error` diagnostic.
-    /// * The file is an out-of-line `#[cfg(test)]` module and tests aren't included. If a declaring
+    /// * The file is an out-of-line `#[cfg(test)]` module and tests are skipped. If a declaring
     ///   file that would decide it can't be read or parsed, the file is checked, and the
     ///   [`FileContext`] reports a `parse-error` diagnostic at its first line that says why.
     ///
@@ -68,13 +67,13 @@ impl Checker {
         let Some(syntax_tree) = context.syntax_tree(RuleId::ErrorsDoc) else {
             return Vec::new();
         };
-        if !self.include_tests && context.is_test_module(RuleId::ErrorsDoc) {
+        if self.skip_tests && context.is_test_module(RuleId::ErrorsDoc) {
             return Vec::new();
         }
         let mut diagnostics = Vec::new();
         let file_index = FileIndex::build(syntax_tree);
         let qualifier_links = file_index.qualifier_links();
-        for fn_item in items::collect(syntax_tree, self.include_tests) {
+        for fn_item in items::collect(syntax_tree, self.skip_tests) {
             let Some(section) = errors_section::parse(&doc_lines::collect(fn_item.attrs)) else {
                 continue;
             };
@@ -1330,11 +1329,9 @@ mod tests {
     }
 
     #[test]
-    fn fns_without_an_errors_section_or_result_and_test_fns_are_not_checked() {
+    fn fns_without_an_errors_section_or_result_are_not_checked() {
         let source_text = "/// No section.\nfn a() -> Result<(), E> { load()?; Ok(()) }\n/// # \
-                           Errors\n///\n/// * [`E::X`] if x.\nfn b() -> Option<()> { None }\n/// \
-                           # Errors\n///\n/// * [`E::X`] if x.\n#[test]\nfn c() -> Result<(), E> \
-                           { Ok(()) }\n";
+                           Errors\n///\n/// * [`E::X`] if x.\nfn b() -> Option<()> { None }\n";
         assert_eq!(checked(source_text), Vec::<String>::new());
     }
 

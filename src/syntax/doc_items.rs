@@ -98,7 +98,7 @@ impl DocItemKind<'_> {
 /// Collects every [`DocItem`] of `syntax_tree`, documented or not, including the items nested in
 /// modules and fn bodies.
 ///
-/// Unless `include_tests` is set, these are skipped:
+/// If `skip_tests` is set, these are skipped:
 ///
 /// * Fns with an attribute whose last path segment is `test`, such as `#[tokio::test]`.
 /// * Items with `#[cfg(test)]`, including whole modules and impl blocks, with everything in them.
@@ -106,9 +106,9 @@ impl DocItemKind<'_> {
 /// # Returns
 ///
 /// The collected items, in source order.
-pub fn collect(syntax_tree: &syn::File, include_tests: bool) -> Vec<DocItem<'_>> {
+pub fn collect(syntax_tree: &syn::File, skip_tests: bool) -> Vec<DocItem<'_>> {
     let mut item_walker = ItemWalker {
-        include_tests,
+        skip_tests,
         impl_stack: Vec::new(),
         doc_items: Vec::new(),
     };
@@ -122,7 +122,7 @@ pub fn collect(syntax_tree: &syn::File, include_tests: bool) -> Vec<DocItem<'_>>
 ///
 /// * `'ast` - The lifetime of the syntax tree being walked.
 struct ItemWalker<'ast> {
-    include_tests: bool,
+    skip_tests: bool,
 
     /// Whether each impl block the walk is in implements a trait, innermost last.
     impl_stack: Vec<ImplKind>,
@@ -135,7 +135,7 @@ impl<'ast> ItemWalker<'ast> {
     ///
     /// Whether an item with `attrs` is test code that the walk skips.
     fn is_skipped(&self, attrs: &[syn::Attribute], is_fn: bool) -> bool {
-        !self.include_tests && test_code::is_test_item(attrs, is_fn)
+        self.skip_tests && test_code::is_test_item(attrs, is_fn)
     }
 
     /// Records the item printed by `item` unless it has no tokens after its attributes.
@@ -274,9 +274,9 @@ enum ImplKind {
 mod tests {
     use super::*;
 
-    fn items(source_text: &str, include_tests: bool) -> Vec<String> {
+    fn items(source_text: &str, skip_tests: bool) -> Vec<String> {
         let syntax_tree = syn::parse_file(source_text).expect("valid file");
-        collect(&syntax_tree, include_tests)
+        collect(&syntax_tree, skip_tests)
             .iter()
             .map(DocItem::description)
             .collect()
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn test_code_is_skipped_unless_included() {
+    fn test_code_is_skipped_only_if_tests_are_skipped() {
         let source_text = concat!(
             "#[test]\nfn unit_test() {}\n",
             "#[cfg(test)]\nmod tests { fn helper() {} }\n",
@@ -327,9 +327,9 @@ mod tests {
             "trait T {\n    #[cfg(test)]\n    fn test_trait_method();\n}\n",
             "fn kept() {}\n",
         );
-        assert_eq!(items(source_text, false), ["trait `T`", "fn `kept`"]);
+        assert_eq!(items(source_text, true), ["trait `T`", "fn `kept`"]);
         assert_eq!(
-            items(source_text, true),
+            items(source_text, false),
             [
                 "fn `unit_test`",
                 "fn `helper`",
