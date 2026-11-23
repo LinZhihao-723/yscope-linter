@@ -19,7 +19,10 @@ use support::write_file;
 /// The finished process's output.
 fn run(directory: &Path, args: &[&str], stdin: &str) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-yscope-linter"));
-    command.arg("yscope-linter").args(args);
+    command
+        .arg("yscope-linter")
+        .args(args)
+        .env("CARGO_TERM_COLOR", "never");
     support::run_command(command, directory, stdin)
 }
 
