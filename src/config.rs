@@ -84,7 +84,7 @@ impl RuleSet {
 
     /// # Returns
     ///
-    /// Whether `rule_id` is enabled.
+    /// Whether `rule_id` is in the set.
     pub fn contains(&self, rule_id: RuleId) -> bool {
         self.rule_ids.contains(&rule_id)
     }

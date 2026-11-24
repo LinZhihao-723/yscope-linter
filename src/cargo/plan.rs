@@ -84,8 +84,8 @@ impl Plan {
             SettingsTable::Workspace,
             &workspace_manifest_path,
         )?;
-        let mut warnings = workspace_settings
-            .deprecation_warnings(SettingsTable::Workspace, &workspace_manifest_path);
+        let mut warnings =
+            workspace_settings.warnings(SettingsTable::Workspace, &workspace_manifest_path);
 
         let mut file_groups = Vec::new();
         for package in packages {
@@ -94,10 +94,8 @@ impl Plan {
                 SettingsTable::Package,
                 &package.manifest_path,
             )?;
-            warnings.extend(
-                package_settings
-                    .deprecation_warnings(SettingsTable::Package, &package.manifest_path),
-            );
+            warnings
+                .extend(package_settings.warnings(SettingsTable::Package, &package.manifest_path));
             let settings = workspace_settings
                 .clone()
                 .overridden_by(package_settings)

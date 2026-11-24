@@ -75,7 +75,8 @@ yscope-linter [OPTIONS] [TARGET]...
   `#[tokio::test]`, an item marked `#[cfg(test)]` with everything inside it, and a module file whose
   parent declares it with `#[cfg(test)] mod tests;`.
 * `comment-greedy-wrap` checks every comment and has no notion of test code, so skipping test code
-  doesn't change it. Naming it in a `--skip-tests` list is accepted and has no effect.
+  doesn't change it. Naming it by its name or code in a `--skip-tests` list has no effect and prints
+  a warning on stderr. A set such as `DOC` doesn't name it.
 * The list of `--skip-tests` is comma-separated and takes what `--rule` takes, including the warning
   for a deprecated rule. It must follow `=`: `--skip-tests ORG001` skips test code in every rule and
   lints a `TARGET` named `ORG001`.
@@ -198,8 +199,9 @@ width = 80
 * Excludes add up: the command line's, the package's and the workspace's all apply.
 * An unknown key, a value of the wrong type, and an unknown rule in `rules` or `skip-tests` are
   errors that name the table and its `Cargo.toml`. A deprecated rule in either is ignored with a
-  warning on stderr. The other keys of `[workspace.metadata]` and `[package.metadata]` belong to
-  other tools and are ignored.
+  warning on stderr, and so is `comment-greedy-wrap` when `skip-tests` names it by its name or code.
+  The other keys of `[workspace.metadata]` and `[package.metadata]` belong to other tools and are
+  ignored.
 
 ### Errors
 

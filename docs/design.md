@@ -347,8 +347,9 @@ unset: `rule_selectors`, `width`, `skip_tests`, and the `excludes`, which are al
   `All`, none for `Off`, and for `Listed` the rules that the selectors name plus the rules that
   don't check test code by default. Without a setting, it holds the rules that don't check test code
   by default. `Rule::new` gives each checker its `CheckConfig::skips_tests`.
-* `deprecation_warnings` warns about each deprecated rule in a `rules` or a `skip-tests` list, with
-  the key that names it.
+* `Settings::warnings` warns about each deprecated rule in a `rules` or a `skip-tests` list, with
+  the key that names it, and about each rule without a test-code mode that a `skip-tests` list names
+  by its name or code.
 
 The command line sets `skip_tests` with `--skip-tests`, which takes an optional list, and
 `--no-skip-tests`:
@@ -364,7 +365,8 @@ The command line sets `skip_tests` with `--skip-tests`, which takes an optional 
 * `--skip-tests` overrides itself and `--no-skip-tests` with clap's `overrides_with_all`, so the
   last of them wins, and a later list replaces an earlier one instead of adding to it.
 * `LintOptions::warnings` warns about each deprecated rule in `--rule` or `--skip-tests`, with the
-  flag that names it.
+  flag that names it, and about each rule without a test-code mode that `--skip-tests` names by its
+  name or code.
 * `--include-tests`, from when test code was skipped by default, is a hidden flag that has no
   effect. `LintOptions::warnings` warns about it too.
 * The `include-tests` setting of the unreleased cargo integration isn't accepted. It is an unknown
@@ -420,10 +422,12 @@ Every rule is reached through `src/rules/registry.rs`:
 
 * `RuleId` names a rule. `RuleId::ALL` lists the rules in run order, `RuleId::name` gives each its
   kebab-case name, `RuleId::code` its stable `Code`, `RuleId::is_deprecated` its deprecation state,
-  and `RuleId::checks_tests_by_default` whether it checks test code without a `skip-tests` setting.
-  These matches are the single source of truth for the rules' metadata. Every current rule checks
-  test code by default. `comment-greedy-wrap` has no notion of test code, so its checker never
-  consults the setting, and naming it in a `skip-tests` list has no effect.
+  `RuleId::checks_tests_by_default` whether it checks test code without a `skip-tests` setting, and
+  `RuleId::has_test_code_mode` whether it can skip test code at all. These matches are the single
+  source of truth for the rules' metadata. Every current rule checks test code by default.
+  `comment-greedy-wrap` has no test-code mode, so its checker never consults the setting.
+  `RuleSelector::named_rule_ids_without_test_code_mode` picks out the selectors that name such a
+  rule by its name or code, and naming one in a `skip-tests` list prints a warning.
 * `Rule` holds an enabled rule's checker, with its settings and the state it keeps across the files
   of a run. `Rule::new` builds it from the `LintConfig`, and `Rule::check` dispatches a
   `FileContext` to it.
@@ -454,8 +458,8 @@ The deprecation state is enforced in three places:
 
 * `RuleSet` drops deprecated rules when it is built, so `FileChecker` never builds or runs one.
 * `Cli::warnings` returns one warning per deprecated rule that `--rule` or `--skip-tests` names,
-  which `main` prints to stderr before the run. `Settings::deprecation_warnings` does the same for
-  the `rules` and `skip-tests` settings of each table.
+  which `main` prints to stderr before the run. `Settings::warnings` does the same for the `rules`
+  and `skip-tests` settings of each table.
 * `Directive::parse` splits the rules a suppression names into the active and the deprecated ones.
   Only the active ones get a `Suppression`, and `suppression::parse` reports each deprecated one as
   an `unused-suppression`, as [Suppression internals](#suppression-internals) describes.
@@ -471,9 +475,10 @@ rule that is deprecated.
 2. Take the next free number in the set: one more than the highest code in it, deprecated rules
    included. Never reuse a number.
 3. Add a `RuleId` variant, add it to `RuleId::ALL`, and give it its name in `RuleId::name`, its code
-   in `RuleId::code`, `false` in `RuleId::is_deprecated`, and its default in
-   `RuleId::checks_tests_by_default`. `--rule`, `--skip-tests`, suppression parsing, set selectors
-   and the unknown-rule message pick it up from there.
+   in `RuleId::code`, `false` in `RuleId::is_deprecated`, its default in
+   `RuleId::checks_tests_by_default`, and whether it can skip test code in
+   `RuleId::has_test_code_mode`. `--rule`, `--skip-tests`, suppression parsing, set selectors and
+   the unknown-rule message pick it up from there.
 4. Add the rule's module under `src/rules/`. Its `Checker` holds the rule's settings and cross-file
    state, and its `check` takes the `FileContext` and returns the rule's diagnostics.
 5. Add a `Rule` variant that holds the checker, with its arms in `Rule::new` and `Rule::check`.

@@ -75,8 +75,8 @@ impl RuleId {
         }
     }
 
-    /// A `skip-tests` setting overrides the default. `comment-greedy-wrap` checks every comment and
-    /// has no notion of test code, so it never consults its default.
+    /// A `skip-tests` setting overrides the default. A rule without a test-code mode never consults
+    /// its default.
     ///
     /// # Returns
     ///
@@ -89,6 +89,20 @@ impl RuleId {
             | Self::SymbolOrder
             | Self::TraitParamsDoc
             | Self::TypeParamsDoc => true,
+        }
+    }
+
+    /// `comment-greedy-wrap` checks every comment and has no notion of test code.
+    ///
+    /// # Returns
+    ///
+    /// Whether the rule can skip `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules.
+    pub const fn has_test_code_mode(self) -> bool {
+        match self {
+            Self::CommentGreedyWrap => false,
+            Self::ErrorsDoc | Self::SymbolOrder | Self::TraitParamsDoc | Self::TypeParamsDoc => {
+                true
+            }
         }
     }
 }
@@ -173,6 +187,23 @@ impl RuleSelector {
             }
         }
         deprecated_rule_ids
+    }
+
+    /// # Returns
+    ///
+    /// The rules without a test-code mode that `selectors` name by their names or codes, each once,
+    /// in the order they are first named. A set doesn't name them.
+    pub fn named_rule_ids_without_test_code_mode(selectors: &[Self]) -> Vec<RuleId> {
+        let mut rule_ids: Vec<RuleId> = Vec::new();
+        for selector in selectors {
+            if let Self::Rule(rule_id) = *selector
+                && !rule_id.has_test_code_mode()
+                && !rule_ids.contains(&rule_id)
+            {
+                rule_ids.push(rule_id);
+            }
+        }
+        rule_ids
     }
 
     /// # Returns
@@ -353,6 +384,24 @@ mod tests {
             ])
         );
         assert_eq!(selected("ORG"), Ok(vec![RuleId::SymbolOrder]));
+    }
+
+    #[test]
+    fn rules_without_a_test_code_mode_are_named_only_by_their_names_and_codes() {
+        let selectors = [
+            RuleSelector::Set(CodeSet::Doc),
+            RuleSelector::Rule(RuleId::ErrorsDoc),
+            RuleSelector::Rule(RuleId::CommentGreedyWrap),
+            RuleSelector::Rule(RuleId::CommentGreedyWrap),
+        ];
+        assert_eq!(
+            RuleSelector::named_rule_ids_without_test_code_mode(&selectors),
+            [RuleId::CommentGreedyWrap]
+        );
+        assert_eq!(
+            RuleSelector::named_rule_ids_without_test_code_mode(&selectors[..2]),
+            []
+        );
     }
 
     #[test]

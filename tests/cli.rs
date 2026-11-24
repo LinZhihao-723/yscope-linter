@@ -186,6 +186,38 @@ fn skip_tests_list_skips_test_code_in_the_listed_rules_only() {
 }
 
 #[test]
+fn skip_tests_list_warns_about_naming_a_rule_without_a_test_code_mode() {
+    let directory =
+        test_directory("skip_tests_list_warns_about_naming_a_rule_without_a_test_code_mode");
+    write_file(
+        &directory,
+        "a.rs",
+        "#[cfg(test)]\nmod tests {\n    // aaaa\n    // bbb\n}\n",
+    );
+    let summary = "yscope-linter: 1 diagnostic in 1 file checked, 0 generated files skipped\n";
+    let warning = "yscope-linter: warning: `comment-greedy-wrap` (DOC001) has no notion of test \
+                   code, so naming it has no effect; remove it from `--skip-tests`\n";
+    let expected_lines = stdout_lines(&run(&directory, &["a.rs"], ""));
+    assert_ne!(expected_lines, Vec::<String>::new());
+    let cases: [(&str, String); 2] = [
+        (
+            "--skip-tests=DOC001,comment-greedy-wrap",
+            format!("{warning}{summary}"),
+        ),
+        ("--skip-tests=DOC", summary.to_owned()),
+    ];
+    for (flag, expected_stderr) in cases {
+        let output = run(&directory, &[flag, "a.rs"], "");
+        assert_eq!(stdout_lines(&output), expected_lines, "{flag}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            expected_stderr,
+            "{flag}"
+        );
+    }
+}
+
+#[test]
 fn include_tests_flag_has_no_effect_but_a_deprecation_warning() {
     let directory = test_directory("include_tests_flag_has_no_effect_but_a_deprecation_warning");
     write_file(&directory, "a.rs", TEST_FN_WITH_A_STALE_FORWARD);

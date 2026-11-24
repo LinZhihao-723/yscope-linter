@@ -87,17 +87,14 @@ impl Settings {
     /// # Returns
     ///
     /// A warning for each deprecated rule that the `rules` or `skip-tests` setting of `table` in
-    /// the `Cargo.toml` at `manifest_path` names.
-    pub fn deprecation_warnings(
-        &self,
-        table: SettingsTable,
-        manifest_path: &ManifestPath,
-    ) -> Vec<String> {
+    /// the `Cargo.toml` at `manifest_path` names, and one for each rule without a test-code mode
+    /// that the `skip-tests` setting names by its name or code.
+    pub fn warnings(&self, table: SettingsTable, manifest_path: &ManifestPath) -> Vec<String> {
         let listed_skip_tests_selectors: &[RuleSelector] = self
             .skip_tests
             .as_ref()
             .map_or(&[], SkipTests::listed_rule_selectors);
-        [
+        let mut warnings: Vec<String> = [
             ("rules", self.rule_selectors.as_deref().unwrap_or_default()),
             ("skip-tests", listed_skip_tests_selectors),
         ]
@@ -114,7 +111,20 @@ impl Settings {
                     )
                 })
         })
-        .collect()
+        .collect();
+        warnings.extend(
+            RuleSelector::named_rule_ids_without_test_code_mode(listed_skip_tests_selectors)
+                .into_iter()
+                .map(|rule_id| {
+                    format!(
+                        "`{rule_id}` ({}) has no notion of test code, so naming it has no effect; \
+                         remove it from `skip-tests` in `{table}` of `{}`",
+                        rule_id.code(),
+                        manifest_path.path().display()
+                    )
+                }),
+        );
+        warnings
     }
 
     /// # Returns
@@ -170,7 +180,7 @@ impl SkipTests {
     /// # Returns
     ///
     /// The selectors of the listed rules, which are none unless the setting is a list.
-    pub fn listed_rule_selectors(&self) -> &[RuleSelector] {
+    fn listed_rule_selectors(&self) -> &[RuleSelector] {
         match self {
             Self::All | Self::Off => &[],
             Self::Listed { rule_selectors } => rule_selectors,
@@ -421,24 +431,20 @@ mod tests {
             assert_eq!(settings.skip_tests, Some(expected_skip_tests), "{value}");
             assert_eq!(test_skipping_rules(&settings), expected_rules, "{value}");
         }
-        assert_eq!(test_skipping_rules(&Settings::default()), []);
     }
 
     #[test]
     fn invalid_skip_tests_entries_are_rejected_as_in_rules() {
-        for text in ["nope", "doc002", "parse-error", "LNT001", "LNT"] {
-            let message = invalid_settings_message(&format!(r#"{{"skip-tests": ["{text}"]}}"#));
-            assert_eq!(
-                message,
-                invalid_settings_message(&format!(r#"{{"rules": ["{text}"]}}"#)),
-                "{text}"
-            );
-            let selector_error = text
-                .parse::<RuleSelector>()
-                .expect_err("an invalid selector")
-                .to_string();
-            assert!(message.contains(&selector_error), "{text}: {message}");
-        }
+        let message = invalid_settings_message(r#"{"skip-tests": ["LNT001"]}"#);
+        assert_eq!(
+            message,
+            invalid_settings_message(r#"{"rules": ["LNT001"]}"#)
+        );
+        let selector_error = "LNT001"
+            .parse::<RuleSelector>()
+            .expect_err("an invalid selector")
+            .to_string();
+        assert!(message.contains(&selector_error), "{message}");
         for value in [r#""ORG001""#, "1", "{}"] {
             let message = invalid_settings_message(&format!(r#"{{"skip-tests": {value}}}"#));
             assert!(

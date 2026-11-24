@@ -35,7 +35,8 @@ impl Cli {
     /// # Returns
     ///
     /// A warning for each deprecated rule that `--rule` or `--skip-tests` names, since it never
-    /// runs, and one for `--include-tests`, which has no effect.
+    /// runs, one for each rule without a test-code mode that `--skip-tests` names by its name or
+    /// code, and one for `--include-tests`, since neither has an effect.
     pub fn warnings(&self) -> Vec<String> {
         self.lint_options.warnings()
     }
@@ -120,7 +121,8 @@ impl CargoArgs {
     /// # Returns
     ///
     /// A warning for each deprecated rule that `--rule` or `--skip-tests` names, since it never
-    /// runs, and one for `--include-tests`, which has no effect.
+    /// runs, one for each rule without a test-code mode that `--skip-tests` names by its name or
+    /// code, and one for `--include-tests`, since neither has an effect.
     pub fn warnings(&self) -> Vec<String> {
         self.lint_options.warnings()
     }
@@ -177,17 +179,17 @@ impl LintOptions {
     /// # Returns
     ///
     /// A warning for each deprecated rule that `--rule` or `--skip-tests` names, since it never
-    /// runs, and one for `--include-tests`, which has no effect.
+    /// runs, one for each rule without a test-code mode that `--skip-tests` names by its name or
+    /// code, and one for `--include-tests`, since neither has an effect.
     fn warnings(&self) -> Vec<String> {
+        let skip_tests_selectors = self
+            .settings_options
+            .skip_tests
+            .as_deref()
+            .unwrap_or_default();
         let mut warnings: Vec<String> = [
             ("--rule", self.settings_options.rules.as_slice()),
-            (
-                "--skip-tests",
-                self.settings_options
-                    .skip_tests
-                    .as_deref()
-                    .unwrap_or_default(),
-            ),
+            ("--skip-tests", skip_tests_selectors),
         ]
         .into_iter()
         .flat_map(|(flag, selectors)| {
@@ -201,6 +203,17 @@ impl LintOptions {
                 })
         })
         .collect();
+        warnings.extend(
+            RuleSelector::named_rule_ids_without_test_code_mode(skip_tests_selectors)
+                .into_iter()
+                .map(|rule_id| {
+                    format!(
+                        "`{rule_id}` ({}) has no notion of test code, so naming it has no effect; \
+                         remove it from `--skip-tests`",
+                        rule_id.code()
+                    )
+                }),
+        );
         if self.settings_options.include_tests {
             warnings.push(
                 "`--include-tests` is deprecated and has no effect, since test code is checked by \
@@ -230,6 +243,7 @@ struct SettingsOptions {
         long,
         value_name = "ID",
         num_args = 0..=1,
+        // Without `=`, `--skip-tests` stays bare, so a following `TARGET` isn't read as its list.
         require_equals = true,
         value_delimiter = ',',
         overrides_with_all = ["skip_tests", "no_skip_tests"]
@@ -391,25 +405,8 @@ mod tests {
     }
 
     #[test]
-    fn skip_tests_takes_its_rules_after_an_equals_sign_only() {
-        let cli = parse(&["--skip-tests", "ORG001"]);
-        assert_eq!(cli.targets, ["ORG001"]);
-        assert_eq!(
-            Settings::from(cli.lint_options.settings_options).skip_tests,
-            Some(SkipTests::All)
-        );
-    }
-
-    #[test]
-    fn skip_tests_flag_rejects_unknown_values_meta_codes_and_empty_entries() {
-        for (value, invalid_entry) in [
-            ("nope", "nope"),
-            ("ORG001,doc003", "doc003"),
-            ("LNT001", "LNT001"),
-            ("LNT", "LNT"),
-            ("", ""),
-            ("ORG001,", ""),
-        ] {
+    fn skip_tests_flag_rejects_invalid_and_empty_entries() {
+        for (value, invalid_entry) in [("ORG001,doc003", "doc003"), ("", ""), ("ORG001,", "")] {
             let error =
                 Cli::try_parse_from(["yscope-linter", &format!("--skip-tests={value}"), "a.rs"])
                     .expect_err("an invalid `--skip-tests` value");

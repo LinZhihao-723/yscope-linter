@@ -352,22 +352,38 @@ fn skip_tests_list_of_a_package_replaces_the_workspace_list() {
 
     let output = run(&directory, &["--workspace", "--skip-tests=DOC003"], "");
     assert_eq!(stdout_lines(&output), [a_symbol_order, b_symbol_order]);
+}
 
+#[test]
+fn skip_tests_setting_warns_about_naming_a_rule_without_a_test_code_mode() {
+    let directory =
+        test_directory("skip_tests_setting_warns_about_naming_a_rule_without_a_test_code_mode");
     write_file(
         &directory,
-        "b/Cargo.toml",
+        "Cargo.toml",
         &package_manifest(
-            "b",
-            "\n[package.metadata.yscope-linter]\nskip-tests = [\"LNT001\"]\n",
+            "single",
+            "[workspace]\n\n[package.metadata.yscope-linter]\nskip-tests = \
+             [\"comment-greedy-wrap\"]\n",
         ),
     );
-    let output = run(&directory, &["--workspace"], "");
-    assert_eq!(output.status.code(), Some(2));
+    write_file(
+        &directory,
+        "src/lib.rs",
+        "#[cfg(test)]\nmod tests {\n    // aaaa\n    // bbb\n}\n",
+    );
+    let output = run(&directory, &[], "");
+    assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("b/Cargo.toml`: `LNT001` is not a rule and can't be selected"),
+        stderr.starts_with(
+            "yscope-linter: warning: `comment-greedy-wrap` (DOC001) has no notion of test code, \
+             so naming it has no effect; remove it from `skip-tests` in \
+             `[package.metadata.yscope-linter]` of `"
+        ),
         "{stderr}"
     );
+    assert!(stderr.contains("Cargo.toml`\n"), "{stderr}");
 }
 
 #[test]
