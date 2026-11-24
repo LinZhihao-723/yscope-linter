@@ -9,6 +9,10 @@ use std::process::Output;
 use std::process::Stdio;
 
 pub const INVALID_SUPPRESSION: &str = "// yscope-linter: allow(errors-doc)\n";
+pub const TEST_FN_WITH_A_STALE_FORWARD: &str = "/// Checks.\n///\n/// # Errors\n///\n/// Returns \
+                                                an error if:\n///\n/// * Forwards [`load`]'s \
+                                                return values on failure.\n#[test]\nfn checks() \
+                                                -> Result<(), E> {\n    Ok(())\n}\n";
 
 /// Creates an empty directory for one test under the target's temporary directory.
 ///

@@ -278,17 +278,15 @@ impl Rule {
             RuleId::CommentGreedyWrap => {
                 Self::CommentGreedyWrap(greedy_wrap::Checker::new(check_config.width))
             }
-            RuleId::ErrorsDoc => {
-                Self::ErrorsDoc(errors_doc::Checker::new(check_config.include_tests))
-            }
+            RuleId::ErrorsDoc => Self::ErrorsDoc(errors_doc::Checker::new(check_config.skip_tests)),
             RuleId::SymbolOrder => {
-                Self::SymbolOrder(symbol_order::Checker::new(check_config.include_tests))
+                Self::SymbolOrder(symbol_order::Checker::new(check_config.skip_tests))
             }
             RuleId::TraitParamsDoc => {
-                Self::TraitParamsDoc(trait_params_doc::Checker::new(check_config.include_tests))
+                Self::TraitParamsDoc(trait_params_doc::Checker::new(check_config.skip_tests))
             }
             RuleId::TypeParamsDoc => {
-                Self::TypeParamsDoc(type_params_doc::Checker::new(check_config.include_tests))
+                Self::TypeParamsDoc(type_params_doc::Checker::new(check_config.skip_tests))
             }
         }
     }

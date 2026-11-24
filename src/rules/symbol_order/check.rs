@@ -13,7 +13,7 @@ use crate::syntax::crate_names::CrateNames;
 /// Checks the order of the items in the modules and inherent impl blocks of each file of a run.
 #[derive(Debug)]
 pub struct Checker {
-    include_tests: bool,
+    skip_tests: bool,
 }
 
 impl Checker {
@@ -21,13 +21,13 @@ impl Checker {
     ///
     /// # Returns
     ///
-    /// A checker that also checks `#[cfg(test)]` items and modules if `include_tests` is set.
-    pub const fn new(include_tests: bool) -> Self {
-        Self { include_tests }
+    /// A checker that skips `#[test]` fns and `#[cfg(test)]` items if `skip_tests` is set.
+    pub const fn new(skip_tests: bool) -> Self {
+        Self { skip_tests }
     }
 
     /// Checks one file. The file is skipped if it failed to lex or to parse, or if it is an
-    /// out-of-line `#[cfg(test)]` module and tests aren't included.
+    /// out-of-line `#[cfg(test)]` module and tests are skipped.
     ///
     /// The file root and every inline module are checked, and so is every inherent impl block in
     /// them. In each scope, the items outside a longest in-order subsequence are out of order.
@@ -40,14 +40,14 @@ impl Checker {
         let Some(syntax_tree) = context.syntax_tree(RuleId::SymbolOrder) else {
             return Vec::new();
         };
-        if !self.include_tests && context.is_test_module(RuleId::SymbolOrder) {
+        if self.skip_tests && context.is_test_module(RuleId::SymbolOrder) {
             return Vec::new();
         }
         let crate_names = CrateNames::collect(syntax_tree);
         let mut file_check = FileCheck {
             entry_collector: EntryCollector {
                 crate_names: &crate_names,
-                include_tests: self.include_tests,
+                skip_tests: self.skip_tests,
             },
             diagnostics: Vec::new(),
         };
@@ -161,18 +161,18 @@ mod tests {
     /// # Panics
     ///
     /// Panics if `source_text` doesn't parse.
-    fn diagnostics(source_text: &str, include_tests: bool) -> Vec<Diagnostic> {
+    fn diagnostics(source_text: &str, skip_tests: bool) -> Vec<Diagnostic> {
         syn::parse_file(source_text).expect("valid file");
         let test_module_cache = TestModuleCache::default();
         let context = FileContext::new(Path::new(FIXTURE_PATH), source_text, &test_module_cache);
-        let mut diagnostics = Checker::new(include_tests).check(&context);
+        let mut diagnostics = Checker::new(skip_tests).check(&context);
         diagnostics.sort_by_key(Diagnostic::position);
         diagnostics
     }
 
     /// # Returns
     ///
-    /// Each diagnostic of `source_text`, without tests, as `<line>:<column>: <message>`.
+    /// Each diagnostic of `source_text`, with tests checked, as `<line>:<column>: <message>`.
     fn findings(source_text: &str) -> Vec<String> {
         format_findings(&diagnostics(source_text, false))
     }
@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn test_code_is_exempt_unless_tests_are_included() {
+    fn test_code_is_exempt_only_if_tests_are_skipped() {
         let source_text = concat!(
             "fn a() {}\n",
             "#[cfg(test)]\n",
@@ -514,14 +514,14 @@ mod tests {
             "}\n",
         );
         assert_eq!(
-            findings(source_text),
+            format_findings(&diagnostics(source_text, true)),
             [
                 "1:1: private fn `a` should come after impl `S`: pub items come before private \
                  items"
             ]
         );
         assert_eq!(
-            format_findings(&diagnostics(source_text, true)),
+            findings(source_text),
             [
                 "1:1: private fn `a` should come after impl `S`: pub items come before private \
                  items",

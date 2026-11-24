@@ -56,7 +56,8 @@ yscope-linter [OPTIONS] [TARGET]...
 | `TARGET`             | A file, a directory, or `FILE:RANGES` (for example `src/a.rs:10-20,30,40-45`).           |
 | `--rule <ID>`        | Enable only this rule, code (`DOC003`) or set (`DOC`). Repeatable. Default: every rule.  |
 | `--width <N>`        | The fill width for `comment-greedy-wrap`. Default: 100.                                  |
-| `--include-tests`    | Also check `#[test]` fns and `#[cfg(test)]` items in the rules that skip them.           |
+| `--skip-tests`       | Skip test code in every rule but `comment-greedy-wrap`. Default: test code is checked.   |
+| `--no-skip-tests`    | Check test code, overriding a `skip-tests` setting.                                      |
 | `--exclude <PATH>`   | Skip this file or directory, matched as a path prefix by whole components. Repeatable.   |
 | `--diff <FILE>`      | Lint only the lines changed by a unified diff. `-` reads the diff from stdin.            |
 | `--format <FORMAT>`  | `text` (default) or `github` (GitHub Actions `::error` workflow commands).               |
@@ -69,6 +70,17 @@ yscope-linter [OPTIONS] [TARGET]...
   set](docs/rules/README.md#selecting-rules-by-name-code-or-set).
 * A file with a plain `//` comment holding the word `@generated` in its first five lines is skipped.
   The summary on stderr counts it separately.
+* Test code is a fn with an attribute whose last path segment is `test`, such as `#[test]` or
+  `#[tokio::test]`, an item marked `#[cfg(test)]` with everything inside it, and a module file whose
+  parent declares it with `#[cfg(test)] mod tests;`.
+* Of `--skip-tests` and `--no-skip-tests`, the last one given wins.
+* `--include-tests` is deprecated and has no effect, since test code is checked by default. It
+  prints a warning on stderr.
+
+> [!IMPORTANT]
+> Test code is checked by default. Before, `errors-doc`, `symbol-order`, `trait-params-doc` and
+> `type-params-doc` skipped it unless `--include-tests` was given. To keep the old output, pass
+> `--skip-tests`, or set `skip-tests = true` in the [`Cargo.toml` settings](#settings).
 
 Each diagnostic is one line on stdout, sorted by path, line and column:
 
@@ -153,7 +165,7 @@ A workspace and each package can set defaults for the options in their `Cargo.to
 ```toml
 [workspace.metadata.yscope-linter]
 width = 100
-include-tests = true
+skip-tests = true
 exclude = ["components/proto/src/generated"]
 rules = ["DOC", "symbol-order"]
 
@@ -164,14 +176,15 @@ width = 80
 | Key             | Type              | Meaning                                                                                |
 | --------------- | ----------------- | -------------------------------------------------------------------------------------- |
 | `width`         | positive integer  | As `--width`.                                                                          |
-| `include-tests` | boolean           | As `--include-tests`.                                                                  |
+| `skip-tests`    | boolean           | As `--skip-tests` if `true`, and as `--no-skip-tests` if `false`.                      |
 | `exclude`       | array of paths    | As `--exclude`, with paths relative to the directory of the `Cargo.toml` that sets it. |
 | `rules`         | array of rule IDs | As `--rule`: names, codes or sets. An empty array enables no rule.                     |
 
 * The `[workspace.metadata.yscope-linter]` table is read from the workspace root's `Cargo.toml`. A
   package's `[package.metadata.yscope-linter]` table applies to that package's files only.
 * Each option comes from the first of the command line, the package's table and the workspace's
-  table that sets it, and else from the default. `--include-tests` can only turn the setting on.
+  table that sets it, and else from the default. `--skip-tests` and `--no-skip-tests` set
+  `skip-tests` either way, so the command line overrides a table in both directions.
 * Excludes add up: the command line's, the package's and the workspace's all apply.
 * An unknown key, a value of the wrong type, and an unknown rule are errors that name the table and
   its `Cargo.toml`. The other keys of `[workspace.metadata]` and `[package.metadata]` belong to

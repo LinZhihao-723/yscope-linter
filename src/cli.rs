@@ -33,7 +33,8 @@ pub struct Cli {
 impl Cli {
     /// # Returns
     ///
-    /// A warning for each deprecated rule that `--rule` names, since it never runs.
+    /// A warning for each deprecated rule that `--rule` names, since it never runs, and one for
+    /// `--include-tests`, which has no effect.
     pub fn warnings(&self) -> Vec<String> {
         self.lint_options.warnings()
     }
@@ -117,7 +118,8 @@ pub struct CargoArgs {
 impl CargoArgs {
     /// # Returns
     ///
-    /// A warning for each deprecated rule that `--rule` names, since it never runs.
+    /// A warning for each deprecated rule that `--rule` names, since it never runs, and one for
+    /// `--include-tests`, which has no effect.
     pub fn warnings(&self) -> Vec<String> {
         self.lint_options.warnings()
     }
@@ -173,17 +175,27 @@ struct LintOptions {
 impl LintOptions {
     /// # Returns
     ///
-    /// A warning for each deprecated rule that `--rule` names, since it never runs.
+    /// A warning for each deprecated rule that `--rule` names, since it never runs, and one for
+    /// `--include-tests`, which has no effect.
     fn warnings(&self) -> Vec<String> {
-        RuleSelector::deprecated_rule_ids(&self.settings_options.rules)
-            .into_iter()
-            .map(|rule_id| {
-                format!(
-                    "`{rule_id}` ({}) is deprecated and never runs; remove it from `--rule`",
-                    rule_id.code()
-                )
-            })
-            .collect()
+        let mut warnings: Vec<String> =
+            RuleSelector::deprecated_rule_ids(&self.settings_options.rules)
+                .into_iter()
+                .map(|rule_id| {
+                    format!(
+                        "`{rule_id}` ({}) is deprecated and never runs; remove it from `--rule`",
+                        rule_id.code()
+                    )
+                })
+                .collect();
+        if self.settings_options.include_tests {
+            warnings.push(
+                "`--include-tests` is deprecated and has no effect, since test code is checked by \
+                 default; remove it"
+                    .to_owned(),
+            );
+        }
+        warnings
     }
 }
 
@@ -199,8 +211,16 @@ struct SettingsOptions {
     #[arg(long, value_name = "N")]
     width: Option<NonZeroUsize>,
 
-    /// Also check #[test] fns and #[cfg(test)] items, which the syntax-tree rules skip by default.
+    /// Skip #[test] fns and #[cfg(test)] items in every rule but comment-greedy-wrap.
+    #[arg(long, overrides_with = "no_skip_tests")]
+    skip_tests: bool,
+
+    /// Check test code, overriding a skip-tests setting. The default.
     #[arg(long)]
+    no_skip_tests: bool,
+
+    /// Deprecated, with no effect: test code is checked by default.
+    #[arg(long, hide = true)]
     include_tests: bool,
 
     /// Skip this file or directory (path-prefix match by whole components). Repeatable.
@@ -213,13 +233,15 @@ impl From<SettingsOptions> for Settings {
         let SettingsOptions {
             rules,
             width,
-            include_tests,
+            skip_tests,
+            no_skip_tests,
+            include_tests: _,
             excludes,
         } = settings_options;
         Self {
             rule_selectors: (!rules.is_empty()).then_some(rules),
             width: width.map(Width::new),
-            include_tests: include_tests.then_some(true),
+            skip_tests: (skip_tests || no_skip_tests).then_some(skip_tests),
             excludes,
         }
     }
@@ -276,7 +298,7 @@ mod tests {
                 "errors-doc",
                 "--width",
                 "80",
-                "--include-tests",
+                "--skip-tests",
                 "--exclude",
                 "b",
                 "--exclude",
@@ -286,9 +308,29 @@ mod tests {
             Settings {
                 rule_selectors: Some(vec![RuleSelector::Rule(RuleId::ErrorsDoc)]),
                 width: Some(Width::new(NonZeroUsize::new(80).expect("non-zero"))),
-                include_tests: Some(true),
+                skip_tests: Some(true),
                 excludes: vec![PathBuf::from("b"), PathBuf::from("c")],
             }
+        );
+    }
+
+    #[test]
+    fn last_skip_tests_flag_wins_and_include_tests_has_no_effect() {
+        let skip_tests =
+            |args: &[&str]| Settings::from(parse(args).lint_options.settings_options).skip_tests;
+        assert_eq!(skip_tests(&["--no-skip-tests", "a.rs"]), Some(false));
+        assert_eq!(
+            skip_tests(&["--no-skip-tests", "--skip-tests", "a.rs"]),
+            Some(true)
+        );
+        assert_eq!(
+            skip_tests(&["--skip-tests", "--no-skip-tests", "a.rs"]),
+            Some(false)
+        );
+        assert_eq!(skip_tests(&["--include-tests", "a.rs"]), None);
+        assert_eq!(
+            skip_tests(&["--skip-tests", "--include-tests", "a.rs"]),
+            Some(true)
         );
     }
 

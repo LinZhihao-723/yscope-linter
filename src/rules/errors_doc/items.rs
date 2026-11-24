@@ -55,7 +55,7 @@ pub struct FnItem<'ast> {
 /// free fns, inherent and trait impl methods, and trait methods with or without a default body,
 /// including fns nested in other fns.
 ///
-/// Unless `include_tests` is set, these are skipped:
+/// If `skip_tests` is set, these are skipped:
 ///
 /// * Fns with an attribute whose last path segment is `test`, such as `#[tokio::test]`.
 /// * Items with `#[cfg(test)]`, including whole modules and impl blocks.
@@ -63,9 +63,9 @@ pub struct FnItem<'ast> {
 /// # Returns
 ///
 /// The collected fns, in source order.
-pub fn collect(syntax_tree: &syn::File, include_tests: bool) -> Vec<FnItem<'_>> {
+pub fn collect(syntax_tree: &syn::File, skip_tests: bool) -> Vec<FnItem<'_>> {
     let mut item_walker = ItemWalker {
-        include_tests,
+        skip_tests,
         context_stack: Vec::new(),
         fn_items: Vec::new(),
     };
@@ -87,7 +87,7 @@ struct ItemContext {
 ///
 /// * `'ast` - The lifetime of the syntax tree being walked.
 struct ItemWalker<'ast> {
-    include_tests: bool,
+    skip_tests: bool,
     context_stack: Vec<ItemContext>,
     fn_items: Vec<FnItem<'ast>>,
 }
@@ -97,12 +97,12 @@ impl<'ast> ItemWalker<'ast> {
     ///
     /// Whether an item with `attrs` is `#[cfg(test)]` code that the walk skips.
     fn is_skipped_test_code(&self, attrs: &[syn::Attribute]) -> bool {
-        !self.include_tests && test_code::has_cfg_test(attrs)
+        self.skip_tests && test_code::has_cfg_test(attrs)
     }
 
     /// Records a fn whose item isn't skipped test code, in the innermost item context:
     ///
-    /// * A `#[test]` fn is skipped unless tests are included.
+    /// * A `#[test]` fn is skipped if tests are skipped.
     /// * A fn whose return type isn't a `Result` path or an `impl Future` of one is skipped.
     /// * The errors of a fn returning an `impl Future` leave it through the `async` block its body
     ///   ends with. Without such a block, the fn's body isn't scanned.
@@ -119,7 +119,7 @@ impl<'ast> ItemWalker<'ast> {
         sig: &'ast syn::Signature,
         block: Option<&'ast syn::Block>,
     ) {
-        if !self.include_tests && attrs.iter().any(test_code::is_test_attribute) {
+        if self.skip_tests && attrs.iter().any(test_code::is_test_attribute) {
             return;
         }
         let Some((result_path, is_future)) = result_return_path(&sig.output) else {
@@ -470,9 +470,9 @@ fn type_param_names(generics: &syn::Generics) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn fn_names(source_text: &str, include_tests: bool) -> Vec<String> {
+    fn fn_names(source_text: &str, skip_tests: bool) -> Vec<String> {
         let syntax_tree = syn::parse_file(source_text).expect("valid file");
-        collect(&syntax_tree, include_tests)
+        collect(&syntax_tree, skip_tests)
             .into_iter()
             .map(|fn_item| fn_item.name)
             .collect()
@@ -507,14 +507,14 @@ mod tests {
     }
 
     #[test]
-    fn fns_marked_test_and_cfg_test_modules_are_skipped_unless_included() {
+    fn fns_marked_test_and_cfg_test_modules_are_skipped_only_if_tests_are_skipped() {
         let source_text = "#[test]\nfn unit_test() -> Result<(), E> { Ok(()) \
                            }\n#[tokio::test]\nasync fn async_test() -> Result<(), E> { Ok(()) \
                            }\n#[cfg(test)]\nmod tests { fn helper() -> Result<(), E> { Ok(()) } \
                            }\nfn kept() -> Result<(), E> { Ok(()) }";
-        assert_eq!(fn_names(source_text, false), ["kept"]);
+        assert_eq!(fn_names(source_text, true), ["kept"]);
         assert_eq!(
-            fn_names(source_text, true),
+            fn_names(source_text, false),
             ["unit_test", "async_test", "helper", "kept"]
         );
     }
