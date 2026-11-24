@@ -8,6 +8,7 @@ use std::str::FromStr;
 use clap::Parser;
 
 use crate::cargo::Settings;
+use crate::cargo::SkipTests;
 use crate::config::CargoConfig;
 use crate::config::DiffInput;
 use crate::config::LintConfig;
@@ -33,8 +34,8 @@ pub struct Cli {
 impl Cli {
     /// # Returns
     ///
-    /// A warning for each deprecated rule that `--rule` names, since it never runs, and one for
-    /// `--include-tests`, which has no effect.
+    /// A warning for each deprecated rule that `--rule` or `--skip-tests` names, since it never
+    /// runs, and one for `--include-tests`, which has no effect.
     pub fn warnings(&self) -> Vec<String> {
         self.lint_options.warnings()
     }
@@ -118,8 +119,8 @@ pub struct CargoArgs {
 impl CargoArgs {
     /// # Returns
     ///
-    /// A warning for each deprecated rule that `--rule` names, since it never runs, and one for
-    /// `--include-tests`, which has no effect.
+    /// A warning for each deprecated rule that `--rule` or `--skip-tests` names, since it never
+    /// runs, and one for `--include-tests`, which has no effect.
     pub fn warnings(&self) -> Vec<String> {
         self.lint_options.warnings()
     }
@@ -175,19 +176,31 @@ struct LintOptions {
 impl LintOptions {
     /// # Returns
     ///
-    /// A warning for each deprecated rule that `--rule` names, since it never runs, and one for
-    /// `--include-tests`, which has no effect.
+    /// A warning for each deprecated rule that `--rule` or `--skip-tests` names, since it never
+    /// runs, and one for `--include-tests`, which has no effect.
     fn warnings(&self) -> Vec<String> {
-        let mut warnings: Vec<String> =
-            RuleSelector::deprecated_rule_ids(&self.settings_options.rules)
+        let mut warnings: Vec<String> = [
+            ("--rule", self.settings_options.rules.as_slice()),
+            (
+                "--skip-tests",
+                self.settings_options
+                    .skip_tests
+                    .as_deref()
+                    .unwrap_or_default(),
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(flag, selectors)| {
+            RuleSelector::deprecated_rule_ids(selectors)
                 .into_iter()
-                .map(|rule_id| {
+                .map(move |rule_id| {
                     format!(
-                        "`{rule_id}` ({}) is deprecated and never runs; remove it from `--rule`",
+                        "`{rule_id}` ({}) is deprecated and never runs; remove it from `{flag}`",
                         rule_id.code()
                     )
                 })
-                .collect();
+        })
+        .collect();
         if self.settings_options.include_tests {
             warnings.push(
                 "`--include-tests` is deprecated and has no effect, since test code is checked by \
@@ -211,11 +224,19 @@ struct SettingsOptions {
     #[arg(long, value_name = "N")]
     width: Option<NonZeroUsize>,
 
-    /// Skip #[test] fns and #[cfg(test)] items in every rule but comment-greedy-wrap.
-    #[arg(long, overrides_with = "no_skip_tests")]
-    skip_tests: bool,
+    /// Skip #[test] fns and #[cfg(test)] items in every rule, or, as --skip-tests=ID,..., only in
+    /// the listed rules: names, codes (ORG001) or sets (DOC). Default: each rule's own.
+    #[arg(
+        long,
+        value_name = "ID",
+        num_args = 0..=1,
+        require_equals = true,
+        value_delimiter = ',',
+        overrides_with_all = ["skip_tests", "no_skip_tests"]
+    )]
+    skip_tests: Option<Vec<RuleSelector>>,
 
-    /// Check test code, overriding a skip-tests setting. The default.
+    /// Check test code in every rule, overriding a skip-tests setting.
     #[arg(long)]
     no_skip_tests: bool,
 
@@ -241,7 +262,11 @@ impl From<SettingsOptions> for Settings {
         Self {
             rule_selectors: (!rules.is_empty()).then_some(rules),
             width: width.map(Width::new),
-            skip_tests: (skip_tests || no_skip_tests).then_some(skip_tests),
+            skip_tests: match skip_tests {
+                Some(rule_selectors) if rule_selectors.is_empty() => Some(SkipTests::All),
+                Some(rule_selectors) => Some(SkipTests::Listed { rule_selectors }),
+                None => no_skip_tests.then_some(SkipTests::Off),
+            },
             excludes,
         }
     }
@@ -308,7 +333,7 @@ mod tests {
             Settings {
                 rule_selectors: Some(vec![RuleSelector::Rule(RuleId::ErrorsDoc)]),
                 width: Some(Width::new(NonZeroUsize::new(80).expect("non-zero"))),
-                skip_tests: Some(true),
+                skip_tests: Some(SkipTests::All),
                 excludes: vec![PathBuf::from("b"), PathBuf::from("c")],
             }
         );
@@ -318,20 +343,90 @@ mod tests {
     fn last_skip_tests_flag_wins_and_include_tests_has_no_effect() {
         let skip_tests =
             |args: &[&str]| Settings::from(parse(args).lint_options.settings_options).skip_tests;
-        assert_eq!(skip_tests(&["--no-skip-tests", "a.rs"]), Some(false));
+        let listed = |texts: &[&str]| SkipTests::Listed {
+            rule_selectors: texts
+                .iter()
+                .map(|text| text.parse().expect("a valid selector"))
+                .collect(),
+        };
+        let cases: [(&[&str], Option<SkipTests>); 12] = [
+            (&["--skip-tests"], Some(SkipTests::All)),
+            (&["--no-skip-tests"], Some(SkipTests::Off)),
+            (
+                &["--skip-tests=ORG001,errors-doc,DOC"],
+                Some(listed(&["ORG001", "errors-doc", "DOC"])),
+            ),
+            (&["--no-skip-tests", "--skip-tests"], Some(SkipTests::All)),
+            (&["--skip-tests", "--no-skip-tests"], Some(SkipTests::Off)),
+            (
+                &["--no-skip-tests", "--skip-tests=ORG001"],
+                Some(listed(&["ORG001"])),
+            ),
+            (
+                &["--skip-tests=ORG001", "--no-skip-tests"],
+                Some(SkipTests::Off),
+            ),
+            (
+                &["--skip-tests", "--skip-tests=ORG001"],
+                Some(listed(&["ORG001"])),
+            ),
+            (
+                &["--skip-tests=ORG001", "--skip-tests"],
+                Some(SkipTests::All),
+            ),
+            (
+                &["--skip-tests=ORG001", "--skip-tests=DOC002"],
+                Some(listed(&["DOC002"])),
+            ),
+            (&["--include-tests"], None),
+            (
+                &["--skip-tests=ORG001", "--include-tests"],
+                Some(listed(&["ORG001"])),
+            ),
+        ];
+        for (flags, expected) in cases {
+            let args: Vec<&str> = flags.iter().copied().chain(["a.rs"]).collect();
+            assert_eq!(skip_tests(&args), expected, "{flags:?}");
+        }
+    }
+
+    #[test]
+    fn skip_tests_takes_its_rules_after_an_equals_sign_only() {
+        let cli = parse(&["--skip-tests", "ORG001"]);
+        assert_eq!(cli.targets, ["ORG001"]);
         assert_eq!(
-            skip_tests(&["--no-skip-tests", "--skip-tests", "a.rs"]),
-            Some(true)
+            Settings::from(cli.lint_options.settings_options).skip_tests,
+            Some(SkipTests::All)
         );
-        assert_eq!(
-            skip_tests(&["--skip-tests", "--no-skip-tests", "a.rs"]),
-            Some(false)
-        );
-        assert_eq!(skip_tests(&["--include-tests", "a.rs"]), None);
-        assert_eq!(
-            skip_tests(&["--skip-tests", "--include-tests", "a.rs"]),
-            Some(true)
-        );
+    }
+
+    #[test]
+    fn skip_tests_flag_rejects_unknown_values_meta_codes_and_empty_entries() {
+        for (value, invalid_entry) in [
+            ("nope", "nope"),
+            ("ORG001,doc003", "doc003"),
+            ("LNT001", "LNT001"),
+            ("LNT", "LNT"),
+            ("", ""),
+            ("ORG001,", ""),
+        ] {
+            let error =
+                Cli::try_parse_from(["yscope-linter", &format!("--skip-tests={value}"), "a.rs"])
+                    .expect_err("an invalid `--skip-tests` value");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{value:?}"
+            );
+            let selector_error = invalid_entry
+                .parse::<RuleSelector>()
+                .expect_err("an invalid selector")
+                .to_string();
+            assert!(
+                error.to_string().contains(&selector_error),
+                "{value:?}: {error}"
+            );
+        }
     }
 
     #[test]

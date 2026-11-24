@@ -289,6 +289,88 @@ fn command_line_overrides_the_skip_tests_setting_either_way() {
 }
 
 #[test]
+fn skip_tests_list_of_a_package_replaces_the_workspace_list() {
+    let directory = test_directory("skip_tests_list_of_a_package_replaces_the_workspace_list");
+    write_file(
+        &directory,
+        "Cargo.toml",
+        "[workspace]\nresolver = \"3\"\nmembers = [\"a\", \
+         \"b\"]\n\n[workspace.metadata.yscope-linter]\nskip-tests = [\"type-params-doc\"]\n",
+    );
+    write_file(
+        &directory,
+        "a/Cargo.toml",
+        &package_manifest(
+            "a",
+            "\n[package.metadata.yscope-linter]\nskip-tests = [\"ORG\"]\n",
+        ),
+    );
+    write_file(&directory, "b/Cargo.toml", &package_manifest("b", ""));
+    let test_module = concat!(
+        "#[cfg(test)]\n",
+        "mod tests {\n",
+        "    /// A wrapper.\n",
+        "    pub struct Wrapper<T>(T);\n",
+        "    fn a() {}\n",
+        "    pub fn b() {}\n",
+        "}\n",
+    );
+    write_file(&directory, "a/src/lib.rs", test_module);
+    write_file(&directory, "b/src/lib.rs", test_module);
+    let findings = |member: &str| {
+        [
+            format!(
+                "{member}/src/lib.rs:3:5: DOC003 type-params-doc: struct `Wrapper` has generic \
+                 parameters but no `# Type Parameters` section; add one with a bullet for each of \
+                 `T`"
+            ),
+            format!(
+                "{member}/src/lib.rs:6:5: ORG001 symbol-order: pub fn `b` should come after pub \
+                 struct `Wrapper`: pub items come before private items"
+            ),
+        ]
+    };
+    let [a_type_params_doc, a_symbol_order] = findings("a");
+    let [b_type_params_doc, b_symbol_order] = findings("b");
+
+    let output = run(&directory, &["--workspace", "--no-skip-tests"], "");
+    assert_eq!(
+        stdout_lines(&output),
+        [
+            a_type_params_doc.clone(),
+            a_symbol_order.clone(),
+            b_type_params_doc,
+            b_symbol_order.clone()
+        ]
+    );
+
+    let output = run(&directory, &["--workspace"], "");
+    assert_eq!(
+        stdout_lines(&output),
+        [a_type_params_doc, b_symbol_order.clone()]
+    );
+
+    let output = run(&directory, &["--workspace", "--skip-tests=DOC003"], "");
+    assert_eq!(stdout_lines(&output), [a_symbol_order, b_symbol_order]);
+
+    write_file(
+        &directory,
+        "b/Cargo.toml",
+        &package_manifest(
+            "b",
+            "\n[package.metadata.yscope-linter]\nskip-tests = [\"LNT001\"]\n",
+        ),
+    );
+    let output = run(&directory, &["--workspace"], "");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("b/Cargo.toml`: `LNT001` is not a rule and can't be selected"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn diff_checks_only_the_changed_lines_of_the_selected_packages() {
     let directory =
         virtual_workspace("diff_checks_only_the_changed_lines_of_the_selected_packages");

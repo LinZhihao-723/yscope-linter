@@ -328,6 +328,10 @@ These comments are checked:
 * Outer doc comments, `///`.
 * Inner doc comments, `//!`.
 
+Comments in test code are checked like any other. The rule has no notion of test code, so
+`--skip-tests` and the `skip-tests` setting don't change it, and naming it in a `skip-tests` list is
+accepted and has no effect.
+
 Only own-line comments are checked: comments with nothing but whitespace before them on their line.
 A trailing comment, after code on its line, is never checked, and it is never joined with the
 comments around it:

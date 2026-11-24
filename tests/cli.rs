@@ -149,6 +149,43 @@ fn test_fns_are_checked_unless_tests_are_skipped() {
 }
 
 #[test]
+fn skip_tests_list_skips_test_code_in_the_listed_rules_only() {
+    let directory = test_directory("skip_tests_list_skips_test_code_in_the_listed_rules_only");
+    write_file(
+        &directory,
+        "a.rs",
+        concat!(
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    /// A wrapper.\n",
+            "    pub struct Wrapper<T>(T);\n",
+            "    fn a() {}\n",
+            "    pub fn b() {}\n",
+            "}\n",
+        ),
+    );
+    let type_params_doc_finding = "a.rs:3:5: DOC003 type-params-doc: struct `Wrapper` has generic \
+                                   parameters but no `# Type Parameters` section; add one with a \
+                                   bullet for each of `T`";
+    let symbol_order_finding = "a.rs:6:5: ORG001 symbol-order: pub fn `b` should come after pub \
+                                struct `Wrapper`: pub items come before private items";
+    let cases: [(&[&str], &[&str]); 4] = [
+        (&[], &[type_params_doc_finding, symbol_order_finding]),
+        (&["--skip-tests=ORG001"], &[type_params_doc_finding]),
+        (&["--skip-tests=DOC"], &[symbol_order_finding]),
+        (&["--skip-tests=type-params-doc,ORG001"], &[]),
+    ];
+    for (flags, expected_lines) in cases {
+        let args: Vec<&str> = flags.iter().copied().chain(["a.rs"]).collect();
+        assert_eq!(
+            stdout_lines(&run(&directory, &args, "")),
+            expected_lines,
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn include_tests_flag_has_no_effect_but_a_deprecation_warning() {
     let directory = test_directory("include_tests_flag_has_no_effect_but_a_deprecation_warning");
     write_file(&directory, "a.rs", TEST_FN_WITH_A_STALE_FORWARD);
@@ -225,6 +262,16 @@ fn undecidable_test_module_is_one_parse_error_that_names_the_asking_rules() {
             ""
         )),
         [format!("{problem} errors-doc checks it as non-test code")]
+    );
+    assert_eq!(
+        stdout_lines(&run(
+            &directory,
+            &["--skip-tests=type-params-doc,ORG001", "dir/child.rs"],
+            ""
+        )),
+        [format!(
+            "{problem} symbol-order, type-params-doc check it as non-test code"
+        )]
     );
     assert_eq!(
         stdout_lines(&run(&directory, &["dir/child.rs"], "")),

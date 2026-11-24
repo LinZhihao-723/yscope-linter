@@ -117,7 +117,8 @@ These fns are not checked:
 * A fn without an `# Errors` section.
 * A fn whose return type isn't a `Result` path, such as `Option<T>`, an alias that doesn't end with
   `Result` (`Fallible<T>`), `Pin<Box<dyn Future<..>>>` or `Poll<Result<..>>`.
-* Test code, if you pass `--skip-tests` or set `skip-tests = true` in the [`Cargo.toml`
+* Test code, if the rule skips it: with `--skip-tests` or a list that names the rule, such as
+  `--skip-tests=errors-doc`, or with `skip-tests = true` or such a list in the [`Cargo.toml`
   settings](../../README.md#settings):
   * A fn with an attribute whose last path segment is `test`, such as `#[test]` or `#[tokio::test]`.
   * Any item marked `#[cfg(test)]` or `#[cfg(all(test, ..))]`, such as a `mod tests` block, and
@@ -147,13 +148,13 @@ $ yscope-linter example.rs
 example.rs:7:1: DOC002 errors-doc: "Forwards [`load`]" names a function whose errors `checks` never forwards
 ```
 
-With `--skip-tests`, the rule skips `checks`.
+With `--skip-tests` or `--skip-tests=errors-doc`, the rule skips `checks`.
 
 The rule needs the file's syntax tree. A file that `syn` can't parse gets a `parse-error`
-diagnostic, and the rule skips the file. With `--skip-tests`, if a parent file that would decide
-whether a file is a test module can't be read or parsed, the file is checked as non-test code, and a
-`parse-error` at its first line says why. Each of these diagnostics is reported once per file, and
-names every enabled rule it affects:
+diagnostic, and the rule skips the file. When the rule skips test code, if a parent file that would
+decide whether a file is a test module can't be read or parsed, the file is checked as non-test
+code, and a `parse-error` at its first line says why. Each of these diagnostics is reported once per
+file, and names every enabled rule it affects:
 
 ```text
 src/store/tests.rs:1:1: LNT001 parse-error: can't tell whether this file is a `#[cfg(test)]` module: syn failed to parse `src/store/mod.rs` (cannot parse string into token stream); errors-doc, symbol-order, trait-params-doc, type-params-doc check it as non-test code
@@ -1176,8 +1177,8 @@ example.rs:15:16: DOC002 errors-doc: `load` returns [`Error::Empty`] directly, b
   file that `syn` can't parse. `comment-greedy-wrap` still checks it. When other rules that need
   the syntax tree are enabled too, the one diagnostic names them all, such as `errors-doc,
   symbol-order are skipped`.
-* `` parse-error: can't tell whether this file is a `#[cfg(test)]` module: ... ``: with
-  `--skip-tests`, the parent file can't be read or parsed. See [Which fns are
+* `` parse-error: can't tell whether this file is a `#[cfg(test)]` module: ... ``: the rule skips
+  test code, and the parent file can't be read or parsed. See [Which fns are
   checked](#which-fns-are-checked).
 
 ## Known limits and when to suppress
@@ -1200,8 +1201,8 @@ The rule reads syntax, not types. These cases are known to be wrong or incomplet
 * A callable argument named by an unqualified path that the file doesn't declare, such as
   `execute(cfg, imported_fn)`, isn't a spelling of the call. Forward `execute`.
 * Return types are recognized by name only. An alias that doesn't end with `Result` isn't checked.
-* With `--skip-tests`, out-of-line `#[cfg(test)]` modules declared with `#[path]`, or inside an
-  inline module of the parent, are checked as non-test code.
+* When the rule skips test code, out-of-line `#[cfg(test)]` modules declared with `#[path]`, or
+  inside an inline module of the parent, are checked as non-test code.
 
 When the rule is wrong for a fn, suppress it with a reason, rather than bending the docstring:
 

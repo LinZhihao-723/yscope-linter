@@ -74,6 +74,23 @@ impl RuleId {
             | Self::TypeParamsDoc => false,
         }
     }
+
+    /// A `skip-tests` setting overrides the default. `comment-greedy-wrap` checks every comment and
+    /// has no notion of test code, so it never consults its default.
+    ///
+    /// # Returns
+    ///
+    /// Whether the rule checks `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules by
+    /// default.
+    pub const fn checks_tests_by_default(self) -> bool {
+        match self {
+            Self::CommentGreedyWrap
+            | Self::ErrorsDoc
+            | Self::SymbolOrder
+            | Self::TraitParamsDoc
+            | Self::TypeParamsDoc => true,
+        }
+    }
 }
 
 impl fmt::Display for RuleId {
@@ -273,21 +290,18 @@ impl Rule {
     /// # Returns
     ///
     /// The rule `rule_id`, with the settings of `check_config`.
-    pub const fn new(rule_id: RuleId, check_config: &CheckConfig) -> Self {
+    pub fn new(rule_id: RuleId, check_config: &CheckConfig) -> Self {
+        let skip_tests = check_config.skips_tests(rule_id);
         match rule_id {
             RuleId::CommentGreedyWrap => {
                 Self::CommentGreedyWrap(greedy_wrap::Checker::new(check_config.width))
             }
-            RuleId::ErrorsDoc => Self::ErrorsDoc(errors_doc::Checker::new(check_config.skip_tests)),
-            RuleId::SymbolOrder => {
-                Self::SymbolOrder(symbol_order::Checker::new(check_config.skip_tests))
-            }
+            RuleId::ErrorsDoc => Self::ErrorsDoc(errors_doc::Checker::new(skip_tests)),
+            RuleId::SymbolOrder => Self::SymbolOrder(symbol_order::Checker::new(skip_tests)),
             RuleId::TraitParamsDoc => {
-                Self::TraitParamsDoc(trait_params_doc::Checker::new(check_config.skip_tests))
+                Self::TraitParamsDoc(trait_params_doc::Checker::new(skip_tests))
             }
-            RuleId::TypeParamsDoc => {
-                Self::TypeParamsDoc(type_params_doc::Checker::new(check_config.skip_tests))
-            }
+            RuleId::TypeParamsDoc => Self::TypeParamsDoc(type_params_doc::Checker::new(skip_tests)),
         }
     }
 

@@ -119,7 +119,8 @@ Entry and configuration:
 * `src/config.rs`: `LintConfig`, with the `CheckConfig`, the targets, the diff input, the excludes
   and the `OutputFormat`; `CargoConfig`, with the manifest path, the `PackageSelection`, the
   command-line `Settings`, the diff input and the `OutputFormat`; and `CheckConfig`, the enabled
-  `RuleSet`, the `Width` and `skip_tests` that the rules check a file with.
+  `RuleSet`, the `Width` and the `RuleSet` of the rules that skip test code, which the rules check a
+  file with.
 * `src/error.rs`: the fatal `Error` enum (I/O, invalid arguments, invalid diff, cargo failures,
   invalid settings, unknown packages), with a hand-written `Display` and `Error`.
 
@@ -318,6 +319,7 @@ stray `.rs` file in a package, is linted as well.
 
 `settings::Settings` holds the settings that one source gives, each `None` when the source leaves it
 unset: `rule_selectors`, `width`, `skip_tests`, and the `excludes`, which are always a list.
+`skip_tests` is a `SkipTests`: `All`, `Off`, or `Listed` with the `RuleSelector`s of a list.
 
 * `Settings::from_table` parses a `metadata.yscope-linter` table into `RawSettings`, a serde struct
   with `deny_unknown_fields` and kebab-case keys. The table is first kept as a `serde_json::Value`
@@ -325,6 +327,10 @@ unset: `rule_selectors`, `width`, `skip_tests`, and the `excludes`, which are al
   and the manifest named. A JSON position in the whole `cargo metadata` output wouldn't help the
   user. The other keys of `metadata` belong to other tools and are ignored.
 * `rules` parses through `RuleSelector`'s `try_from = "String"`, with the same messages as `--rule`.
+* `skip-tests` parses through a hand-written `Deserialize` for `SkipTests`, whose visitor takes a
+  boolean or a sequence. Each element parses as a `RuleSelector`, so a list has the messages of
+  `rules`, and any other type is an error that expects `a boolean or an array of rule IDs`. An
+  untagged enum would replace both messages with one that names no variant.
 * `width` is a `NonZeroUsize`, so 0 is rejected while parsing.
 * `from_table` joins each exclude of a table to the directory of the `Cargo.toml` that declares it.
   The command line's excludes are kept as written, and `Plan::new` resolves every exclude against
@@ -333,16 +339,34 @@ unset: `rule_selectors`, `width`, `skip_tests`, and the `excludes`, which are al
 * `overridden_by` keeps each setting of the overriding source when it is set, and appends the
   excludes. `Plan::new` folds the workspace's settings, the package's and the command line's in that
   order, and `check_config` fills the unset ones with the defaults: every rule, `Width::DEFAULT` and
-  checked test code.
+  each rule's `RuleId::checks_tests_by_default`.
+* A `rules` or `skip-tests` list replaces the one it overrides, as every setting but `excludes`
+  does. A package that adds one rule to the workspace's `skip-tests` list repeats the workspace's
+  rules.
+* `check_config` resolves `skip_tests` into `CheckConfig::test_skipping_rules`: every rule for
+  `All`, none for `Off`, and for `Listed` the rules that the selectors name plus the rules that
+  don't check test code by default. Without a setting, it holds the rules that don't check test code
+  by default. `Rule::new` gives each checker its `CheckConfig::skips_tests`.
+* `deprecation_warnings` warns about each deprecated rule in a `rules` or a `skip-tests` list, with
+  the key that names it.
 
-The command line sets `skip_tests` with a pair of flags, the clap idiom for a boolean that can be
-set both ways:
+The command line sets `skip_tests` with `--skip-tests`, which takes an optional list, and
+`--no-skip-tests`:
 
-* `--skip-tests` gives `Some(true)`, `--no-skip-tests` gives `Some(false)`, and neither gives
-  `None`. So the command line overrides a `skip-tests` setting in both directions.
-* The two flags override each other with clap's `overrides_with`, so the last one given wins.
+* `--skip-tests` is an `Option<Vec<RuleSelector>>` with `num_args = 0..=1`, `require_equals` and
+  `value_delimiter = ','`. Bare, it gives an empty list, which becomes `All`. With a value, it gives
+  the list, which becomes `Listed`. `--skip-tests=` and an empty entry, as in `ORG001,`, are the
+  empty selector, an unknown rule, so an empty list always means the bare flag.
+* `require_equals` keeps `--skip-tests ORG001` from taking `ORG001`. It stays a `TARGET`, as it
+  would be before the list existed.
+* `--no-skip-tests` gives `Off`, and neither flag gives `None`. So the command line overrides a
+  `skip-tests` setting in both directions.
+* `--skip-tests` overrides itself and `--no-skip-tests` with clap's `overrides_with_all`, so the
+  last of them wins, and a later list replaces an earlier one instead of adding to it.
+* `LintOptions::warnings` warns about each deprecated rule in `--rule` or `--skip-tests`, with the
+  flag that names it.
 * `--include-tests`, from when test code was skipped by default, is a hidden flag that has no
-  effect. `LintOptions::warnings` warns about it, as about a deprecated rule in `--rule`.
+  effect. `LintOptions::warnings` warns about it too.
 * The `include-tests` setting of the unreleased cargo integration isn't accepted. It is an unknown
   key, whose error lists `skip-tests`.
 
@@ -395,8 +419,11 @@ step 3 of the [pipeline](#pipeline) describes.
 Every rule is reached through `src/rules/registry.rs`:
 
 * `RuleId` names a rule. `RuleId::ALL` lists the rules in run order, `RuleId::name` gives each its
-  kebab-case name, `RuleId::code` its stable `Code`, and `RuleId::is_deprecated` its deprecation
-  state. These matches are the single source of truth for the rules' metadata.
+  kebab-case name, `RuleId::code` its stable `Code`, `RuleId::is_deprecated` its deprecation state,
+  and `RuleId::checks_tests_by_default` whether it checks test code without a `skip-tests` setting.
+  These matches are the single source of truth for the rules' metadata. Every current rule checks
+  test code by default. `comment-greedy-wrap` has no notion of test code, so its checker never
+  consults the setting, and naming it in a `skip-tests` list has no effect.
 * `Rule` holds an enabled rule's checker, with its settings and the state it keeps across the files
   of a run. `Rule::new` builds it from the `LintConfig`, and `Rule::check` dispatches a
   `FileContext` to it.
@@ -404,7 +431,8 @@ Every rule is reached through `src/rules/registry.rs`:
 The checkers keep no state across files. The cache of [out-of-line test
 module](#out-of-line-test-modules) verdicts is shared by every rule, so `FileChecker` owns it and
 lends it to each file's `FileContext`. `TestModuleCache` keeps its interior mutability private. The
-`comment-greedy-wrap` checker holds the width, and the other checkers hold `skip_tests`.
+`comment-greedy-wrap` checker holds the width, and the other checkers hold `skip_tests`, which
+`Rule::new` takes from `CheckConfig::skips_tests` for each rule.
 
 ### Codes and selectors
 
@@ -425,8 +453,9 @@ The naming standard and the deprecation policy are user-facing, in
 The deprecation state is enforced in three places:
 
 * `RuleSet` drops deprecated rules when it is built, so `FileChecker` never builds or runs one.
-* `Cli::warnings` returns one warning per deprecated rule that `--rule` names, which `main` prints
-  to stderr before the run.
+* `Cli::warnings` returns one warning per deprecated rule that `--rule` or `--skip-tests` names,
+  which `main` prints to stderr before the run. `Settings::deprecation_warnings` does the same for
+  the `rules` and `skip-tests` settings of each table.
 * `Directive::parse` splits the rules a suppression names into the active and the deprecated ones.
   Only the active ones get a `Suppression`, and `suppression::parse` reports each deprecated one as
   an `unused-suppression`, as [Suppression internals](#suppression-internals) describes.
@@ -442,8 +471,9 @@ rule that is deprecated.
 2. Take the next free number in the set: one more than the highest code in it, deprecated rules
    included. Never reuse a number.
 3. Add a `RuleId` variant, add it to `RuleId::ALL`, and give it its name in `RuleId::name`, its code
-   in `RuleId::code`, and `false` in `RuleId::is_deprecated`. `--rule`, suppression parsing, set
-   selectors and the unknown-rule message pick it up from there.
+   in `RuleId::code`, `false` in `RuleId::is_deprecated`, and its default in
+   `RuleId::checks_tests_by_default`. `--rule`, `--skip-tests`, suppression parsing, set selectors
+   and the unknown-rule message pick it up from there.
 4. Add the rule's module under `src/rules/`. Its `Checker` holds the rule's settings and cross-file
    state, and its `check` takes the `FileContext` and returns the rule's diagnostics.
 5. Add a `Rule` variant that holds the checker, with its arms in `Rule::new` and `Rule::check`.
@@ -457,7 +487,7 @@ rule that is deprecated.
 
 A rule reads the file only through its `FileContext`. When `syntax_tree` returns `None`, the rule
 checks nothing; the context reports the `parse-error`. A rule that can skip test code asks
-`is_test_module` only with `--skip-tests`, and checks nothing for a test module. Rule-agnostic
+`is_test_module` only when it skips test code, and checks nothing for a test module. Rule-agnostic
 helpers belong in `src/syntax/` and `src/doc/`, next to `src/lexer.rs` and `src/markdown/`.
 
 ### Deprecating a rule
@@ -852,7 +882,7 @@ The model has three parts:
 `errors_doc::Checker::check` runs these stages on each file:
 
 1. It gets the syntax tree from the `FileContext`, or checks nothing.
-2. With `--skip-tests`, it asks the `FileContext` whether the file is an [out-of-line test
+2. If it skips test code, it asks the `FileContext` whether the file is an [out-of-line test
    module](#out-of-line-test-modules). A test module is skipped. A declaring file that can't be read
    or parsed gives a `parse-error` at line 1, and the file is checked unless another candidate marks
    it as a test module.
@@ -881,9 +911,9 @@ holding the self names, the generic type parameters, and whether its fns are ass
 * `visit_item_fn`, `visit_impl_item_fn` and `visit_trait_item_fn` record the fn, then recurse into
   its body in a fresh, non-associated context. So nested fns, impls and modules are checked on their
   own, while the body scanner never enters them.
-* With `--skip-tests`, every item with `#[cfg(test)]` (or a `cfg(all(..))` that requires `test`) is
-  skipped without recursion, and so is a fn with an attribute whose last segment is `test`
-  (`#[test]`, `#[tokio::test]`).
+* If the rule skips test code, every item with `#[cfg(test)]` (or a `cfg(all(..))` that requires
+  `test`) is skipped without recursion, and so is a fn with an attribute whose last segment is
+  `test` (`#[test]`, `#[tokio::test]`).
 
 A fn is collected when its return type is a `Type::Path` whose last segment ends with `Result`
 (`Result`, `io::Result`, `DbResult`), which covers `async fn`. A return type of `impl Future<Output
@@ -1635,11 +1665,11 @@ The rule checks two kinds of scopes, each on its own:
 Trait impl blocks and trait declarations aren't checked inside. Their item order follows the trait
 or rustfmt's `reorder_impl_items`.
 
-With `--skip-tests`, an out-of-line test module file is skipped, as `FileContext::is_test_module`
-decides, and so is every item with `#[cfg(test)]` (or a `cfg(all(..))` that requires `test`),
-including whole `mod tests` blocks and inherent impl blocks, and every fn with a `#[test]`-like
-attribute, as `doc_items` skips them. Without `--skip-tests`, those items are counted like any
-other, and the body of a `#[cfg(test)] mod tests` is checked as a module.
+If the rule skips test code, an out-of-line test module file is skipped, as
+`FileContext::is_test_module` decides, and so is every item with `#[cfg(test)]` (or a `cfg(all(..))`
+that requires `test`), including whole `mod tests` blocks and inherent impl blocks, and every fn
+with a `#[test]`-like attribute, as `doc_items` skips them. Otherwise, those items are counted like
+any other, and the body of a `#[cfg(test)] mod tests` is checked as a module.
 
 In a module, these items are exempt: they are neither checked nor counted, so they may sit anywhere,
 and the items around them are compared as if they weren't there.
@@ -1768,7 +1798,7 @@ aliases. Not checked:
   parameters.
 * An item without a docstring. Like `errors-doc`, which skips a fn without an `# Errors` section,
   the rule only checks docstrings that exist.
-* Test code, with `--skip-tests`, as `doc_items::collect` and `FileContext::is_test_module` decide.
+* Test code, if the rule skips it, as `doc_items::collect` and `FileContext::is_test_module` decide.
 
 An item's generic parameters are its own `Generics::params`, in declaration order:
 
@@ -1798,7 +1828,7 @@ guide ("`# Parameters` only in trait declarations"): a trait declaration documen
 parameters, and nothing else has a `# Parameters` section. The heading is `# Parameters`, as the
 guides and the existing uses in CLP and Spider write it; `# Arguments` isn't recognized.
 
-Checked items, from `doc_items::collect`, documented, and not test code with `--skip-tests`:
+Checked items, from `doc_items::collect`, documented, and not test code if the rule skips it:
 
 * Trait method declarations, with or without a default body.
 * For the reverse check, every other item `doc_items::collect` returns: free fns, inherent methods,
@@ -1978,8 +2008,8 @@ fn or comment it belonged to, and the anchor spans cover the rest.
 * Every `errors-doc` finding kind has a minimal fixture that produces it, and a satisfied version
   that is clean. Each body-scan case and each keep rule of the reverse checks has its own test.
 * `driver.rs` tests the interactions of the pipeline: a lex failure, a `syn` failure in a run with
-  and without `errors-doc`, the anchor spans against line filters, suppressions ending paragraphs,
-  and the lazy parse for `allow-item`.
+  and without `errors-doc`, a rule that skips test code dropping only its own findings, the anchor
+  spans against line filters, suppressions ending paragraphs, and the lazy parse for `allow-item`.
 * Every `symbol-order`, `type-params-doc` and `trait-params-doc` check and exemption has a fixture
   that produces it or is clean, in the rule's own unit tests. `doc/section.rs`,
   `doc/param_section.rs`, `syntax/visibility.rs`, `syntax/crate_names.rs` and `syntax/doc_items.rs`
@@ -1992,21 +2022,24 @@ fn or comment it belonged to, and the anchor spans cover the rest.
   rule](#deprecating-a-rule).
 * `tests/cli.rs` runs the built binary (`CARGO_BIN_EXE_yscope-linter`) on files each test writes
   under `CARGO_TARGET_TMPDIR`. It covers the output format and order, exit codes, the directory
-  walk, `@generated` skipping, `--rule`, `--exclude`, the checked test code, `--skip-tests` and
-  `--no-skip-tests`, the warning of `--include-tests`, `--diff -` and `--diff <FILE>`, including a
-  diff that isn't UTF-8, `--format github` and `--version`.
+  walk, `@generated` skipping, `--rule`, `--exclude`, the checked test code, `--skip-tests`,
+  `--skip-tests=<ID>,...` and `--no-skip-tests`, the warning of `--include-tests`, `--diff -` and
+  `--diff <FILE>`, including a diff that isn't UTF-8, `--format github` and `--version`.
 * `cargo/metadata.rs` tests the package selection and the rejected manifest paths on hand-written
   `cargo metadata` output, `cargo/settings.rs` the parsing, the error context and the precedence of
-  the settings, and `cli.rs` the settings of the command-line options.
+  the settings, including a `skip-tests` boolean or list and the list replacing a lower level's, and
+  `cli.rs` the settings of the command-line options, including the last of the `--skip-tests` and
+  `--no-skip-tests` flags winning.
 * `tests/cargo.rs` runs `CARGO_BIN_EXE_cargo-yscope-linter` with cargo's `yscope-linter` first
   argument on cargo workspaces that each test writes, so the real `cargo metadata` answers. It
   covers the default selection from the root and from a member, `-p`, `--workspace` and
   `--exclude-package`, a single package's targets and a custom target directory, the files outside
   every package and in nested packages, the settings' precedence and relative excludes, including
   `..` components and command-line excludes from a member directory, `skip-tests` overridden by
-  `--skip-tests` and `--no-skip-tests`, `--diff` limited to the selected packages and run from a
-  member directory, relative paths in the GitHub format, and the fatal errors: a failing
-  `cargo metadata`, a missing cargo, an invalid package or workspace setting and an unknown package.
+  `--skip-tests` and `--no-skip-tests`, a package's `skip-tests` list replacing the workspace's and
+  an invalid entry in it, `--diff` limited to the selected packages and run from a member directory,
+  relative paths in the GitHub format, and the fatal errors: a failing `cargo metadata`, a missing
+  cargo, an invalid package or workspace setting and an unknown package.
 * The repository lints itself, test code included, with `yscope-linter src tests` and with
   `cargo yscope-linter`, which must both be clean.
 
@@ -2038,8 +2071,8 @@ What `errors-doc` checks:
 * An `impl Future<Output = ..>` whose `Output` doesn't end in `Result` or whose body doesn't end
   with an `async` block, and `Pin<Box<dyn Future>>` and `Poll<Result>` returns, aren't scanned. For
   example, `components/spider-storage/src/cache/tree/control_block.rs` returns an `Output` alias.
-* With `--skip-tests`, out-of-line test modules declared with `#[path]`, or inside an inline module
-  of the parent, are checked as non-test code.
+* In a rule that skips test code, out-of-line test modules declared with `#[path]`, or inside an
+  inline module of the parent, are checked as non-test code.
 * `?` inside `assert!` arguments counts normally. It is rare outside tests, whose fns seldom have an
   `# Errors` section.
 * The section's wording isn't read, so a section that states the fn never fails gets the intro
@@ -2185,9 +2218,18 @@ Cargo mode:
   `Cargo.toml` isn't necessarily its package's, so the path mode stays free of cargo.
 * Skipping test code by default, with `--include-tests` to check it. The y-scope guides apply to
   test code too, and a skip that is on by default hides findings that nobody asked to hide.
-* One `--skip-tests[=<BOOL>]` flag with an optional value. The value would need `require_equals`, or
-  `--skip-tests false` would be ambiguous next to the positional `TARGET`s, and a flag pair is the
-  form clap and cargo users know.
+* One `--skip-tests[=<BOOL>]` flag with an optional value. `--no-skip-tests` beside it is the form
+  clap and cargo users know for a boolean, and the optional value is the list of rules instead.
+* A separate repeatable flag for the list, such as `--skip-tests-for <RULE>`. It would be a fourth
+  flag for one setting, and would need its own rule for how it combines with `--skip-tests` and
+  `--no-skip-tests`. `--skip-tests=<ID>,...` mirrors the `skip-tests` setting, which is a boolean or
+  a list.
+* Adding up `skip-tests` lists across levels, as `excludes` do. A package's list replaces the
+  workspace's, as `rules` does, so the package's table says in full which rules skip its test code.
+  An exclude is a path that can point into any package, which is why excludes add up.
+* A per-rule default that `comment-greedy-wrap` leaves out. The exhaustive match makes every rule,
+  including a future one, decide, so the rule that has no notion of test code declares `true` and
+  never reads it.
 * Keeping `include-tests` as a deprecated setting. No release read it, so there is no `Cargo.toml`
   to migrate, and a second key for one setting would need its own precedence rule.
 * Making `--include-tests` act as `--no-skip-tests`. No release read settings, so the flag had no

@@ -190,7 +190,7 @@ mod tests {
         FileChecker::new(CheckConfig {
             rule_set,
             width: Width::DEFAULT,
-            skip_tests: false,
+            test_skipping_rules: std::iter::empty().collect(),
         })
     }
 
@@ -223,6 +223,65 @@ mod tests {
                  before it are checked"
             ]
         );
+    }
+
+    #[test]
+    fn rule_that_skips_tests_drops_only_its_own_test_code_findings() {
+        let source_text = concat!(
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    /// Checks.\n",
+            "    ///\n",
+            "    /// # Errors\n",
+            "    ///\n",
+            "    /// Returns an error if:\n",
+            "    ///\n",
+            "    /// * Forwards [`load`]'s return values on failure.\n",
+            "    fn checks() -> Result<(), E> {\n",
+            "        Ok(())\n",
+            "    }\n",
+            "    /// A wrapper.\n",
+            "    pub struct Wrapper<T>(T);\n",
+            "    pub trait Store {\n",
+            "        /// Loads.\n",
+            "        fn load(&self, key: u8);\n",
+            "    }\n",
+            "}\n",
+        );
+        let diagnostics = |test_skipping_rules: &[RuleId]| {
+            FileChecker::new(CheckConfig {
+                rule_set: RuleSet::all(),
+                width: Width::DEFAULT,
+                test_skipping_rules: test_skipping_rules.iter().copied().collect(),
+            })
+            .check(Path::new("a.rs"), source_text, &LineFilter::All)
+        };
+        let all_diagnostics = diagnostics(&[]);
+        let syntax_tree_rules = [
+            RuleId::ErrorsDoc,
+            RuleId::SymbolOrder,
+            RuleId::TraitParamsDoc,
+            RuleId::TypeParamsDoc,
+        ];
+        for rule_id in syntax_tree_rules {
+            assert!(
+                all_diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.kind() == rule_id.into()),
+                "{rule_id}"
+            );
+            let others_diagnostics = all_diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.kind() != rule_id.into())
+                .cloned()
+                .collect();
+            assert_eq!(
+                rendered(diagnostics(&[rule_id])),
+                rendered(others_diagnostics),
+                "{rule_id}"
+            );
+        }
+        assert_eq!(diagnostics(&syntax_tree_rules), []);
     }
 
     #[test]

@@ -55,7 +55,8 @@ kind of rule it is:
 
 ## Selecting rules by name, code or set
 
-`--rule` and every [suppression comment](../suppression.md) accept three spellings:
+`--rule`, the list of `--skip-tests=<ID>,...`, the `rules` and `skip-tests` settings and every
+[suppression comment](../suppression.md) accept three spellings:
 
 * A rule name, such as `type-params-doc`.
 * A rule code, such as `DOC003`.
@@ -74,7 +75,8 @@ says to write `DOC003`. Every code and set has one spelling, so a search for `DO
 suppression of `type-params-doc` that uses its code.
 
 A meta code can't be selected, whether by name, by code or by the `LNT` prefix. An unknown value is
-a usage error for `--rule` and an `invalid-suppression` in a suppression.
+a usage error for `--rule` and `--skip-tests`, an error in a setting, and an `invalid-suppression`
+in a suppression.
 
 ## Deprecation policy
 
@@ -85,8 +87,8 @@ finding:
 
 * A set prefix skips it. `--rule DOC` and `allow(DOC)` name only the `DOC` rules that aren't
   deprecated.
-* Naming it in `--rule`, by name or by code, is accepted with a warning on stderr. The run goes on
-  without the rule:
+* Naming it in `--rule` or `--skip-tests`, or in the `rules` or `skip-tests` setting, by name or by
+  code, is accepted with a warning on stderr. The run goes on without the rule:
 
   ```text
   yscope-linter: warning: `old-rule` (DOC009) is deprecated and never runs; remove it from `--rule`

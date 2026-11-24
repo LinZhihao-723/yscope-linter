@@ -64,8 +64,9 @@ These are not checked:
 * An item without a docstring, or with only blank doc lines. The rule checks the docstrings that
   exist; it doesn't require one. This is the policy of [`errors-doc`](errors-doc.md), which checks
   only the fns that have an `# Errors` section.
-* Test code, if you pass `--skip-tests` or set `skip-tests = true` in the [`Cargo.toml`
-  settings](../../README.md#settings): fns with a `test` attribute such as `#[test]` or
+* Test code, if the rule skips it: with `--skip-tests` or a list that names the rule, such as
+  `--skip-tests=DOC003`, or with `skip-tests = true` or such a list in the [`Cargo.toml`
+  settings](../../README.md#settings). Test code is fns with a `test` attribute such as `#[test]` or
   `#[tokio::test]`, items marked `#[cfg(test)]` with everything inside them, and module files whose
   parent declares them with `#[cfg(test)] mod tests;`. See
   [`errors-doc`](errors-doc.md#which-fns-are-checked) for how such a parent is found.

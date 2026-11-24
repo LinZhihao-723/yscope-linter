@@ -8,3 +8,4 @@ mod settings;
 pub use plan::Plan;
 pub use settings::Settings;
 pub use settings::SettingsTable;
+pub use settings::SkipTests;
