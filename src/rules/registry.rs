@@ -75,33 +75,14 @@ impl RuleId {
         }
     }
 
-    /// A `skip-tests` setting overrides the default. A rule without a test-code mode never consults
-    /// its default.
-    ///
     /// # Returns
     ///
-    /// Whether the rule checks `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules by
-    /// default.
-    pub const fn checks_tests_by_default(self) -> bool {
+    /// How the rule treats `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules.
+    pub const fn test_code_mode(self) -> TestCodeMode {
         match self {
-            Self::CommentGreedyWrap
-            | Self::ErrorsDoc
-            | Self::SymbolOrder
-            | Self::TraitParamsDoc
-            | Self::TypeParamsDoc => true,
-        }
-    }
-
-    /// `comment-greedy-wrap` checks every comment and has no notion of test code.
-    ///
-    /// # Returns
-    ///
-    /// Whether the rule can skip `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules.
-    pub const fn has_test_code_mode(self) -> bool {
-        match self {
-            Self::CommentGreedyWrap => false,
+            Self::CommentGreedyWrap => TestCodeMode::Unsupported,
             Self::ErrorsDoc | Self::SymbolOrder | Self::TraitParamsDoc | Self::TypeParamsDoc => {
-                true
+                TestCodeMode::CheckedByDefault
             }
         }
     }
@@ -111,6 +92,24 @@ impl fmt::Display for RuleId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.name())
     }
+}
+
+/// How a rule treats `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules.
+#[derive(Debug)]
+pub enum TestCodeMode {
+    /// The rule has no notion of test code: it checks test code like any other, and a `skip-tests`
+    /// setting doesn't change it.
+    Unsupported,
+
+    /// The rule checks test code unless a `skip-tests` setting skips it.
+    CheckedByDefault,
+
+    /// The rule skips test code unless a `skip-tests` setting checks it.
+    #[expect(
+        dead_code,
+        reason = "no rule skips test code by default yet, but every `match` already handles one"
+    )]
+    SkippedByDefault,
 }
 
 /// A set of diagnostic codes, named by the prefix its codes share.
@@ -196,10 +195,14 @@ impl RuleSelector {
     pub fn named_rule_ids_without_test_code_mode(selectors: &[Self]) -> Vec<RuleId> {
         let mut rule_ids: Vec<RuleId> = Vec::new();
         for selector in selectors {
-            if let Self::Rule(rule_id) = *selector
-                && !rule_id.has_test_code_mode()
-                && !rule_ids.contains(&rule_id)
-            {
+            let Self::Rule(rule_id) = *selector else {
+                continue;
+            };
+            let has_test_code_mode = match rule_id.test_code_mode() {
+                TestCodeMode::Unsupported => false,
+                TestCodeMode::CheckedByDefault | TestCodeMode::SkippedByDefault => true,
+            };
+            if !has_test_code_mode && !rule_ids.contains(&rule_id) {
                 rule_ids.push(rule_id);
             }
         }

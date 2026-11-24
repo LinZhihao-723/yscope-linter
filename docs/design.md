@@ -339,14 +339,14 @@ unset: `rule_selectors`, `width`, `skip_tests`, and the `excludes`, which are al
 * `overridden_by` keeps each setting of the overriding source when it is set, and appends the
   excludes. `Plan::new` folds the workspace's settings, the package's and the command line's in that
   order, and `check_config` fills the unset ones with the defaults: every rule, `Width::DEFAULT` and
-  each rule's `RuleId::checks_tests_by_default`.
+  each rule's default for test code in `RuleId::test_code_mode`.
 * A `rules` or `skip-tests` list replaces the one it overrides, as every setting but `excludes`
   does. A package that adds one rule to the workspace's `skip-tests` list repeats the workspace's
   rules.
 * `check_config` resolves `skip_tests` into `CheckConfig::test_skipping_rules`: every rule for
-  `All`, none for `Off`, and for `Listed` the rules that the selectors name plus the rules that
-  don't check test code by default. Without a setting, it holds the rules that don't check test code
-  by default. `Rule::new` gives each checker its `CheckConfig::skips_tests`.
+  `All`, none for `Off`, and for `Listed` the rules that the selectors name plus the
+  `SkippedByDefault` rules. Without a setting, it holds the `SkippedByDefault` rules. `Rule::new`
+  gives each checker its `CheckConfig::skips_tests`.
 * `Settings::warnings` warns about each deprecated rule in a `rules` or a `skip-tests` list, with
   the key that names it, and about each rule without a test-code mode that a `skip-tests` list names
   by its name or code.
@@ -422,10 +422,11 @@ Every rule is reached through `src/rules/registry.rs`:
 
 * `RuleId` names a rule. `RuleId::ALL` lists the rules in run order, `RuleId::name` gives each its
   kebab-case name, `RuleId::code` its stable `Code`, `RuleId::is_deprecated` its deprecation state,
-  `RuleId::checks_tests_by_default` whether it checks test code without a `skip-tests` setting, and
-  `RuleId::has_test_code_mode` whether it can skip test code at all. These matches are the single
-  source of truth for the rules' metadata. Every current rule checks test code by default.
-  `comment-greedy-wrap` has no test-code mode, so its checker never consults the setting.
+  and `RuleId::test_code_mode` its `TestCodeMode`: `Unsupported` for a rule without a test-code
+  mode, and otherwise `CheckedByDefault` or `SkippedByDefault`, whether it checks test code without
+  a `skip-tests` setting. These matches are the single source of truth for the rules' metadata.
+  Every current rule but `comment-greedy-wrap` is `CheckedByDefault`. `comment-greedy-wrap` is
+  `Unsupported`, so its checker never consults the setting.
   `RuleSelector::named_rule_ids_without_test_code_mode` picks out the selectors that name such a
   rule by its name or code, and naming one in a `skip-tests` list prints a warning.
 * `Rule` holds an enabled rule's checker, with its settings and the state it keeps across the files
@@ -475,10 +476,9 @@ rule that is deprecated.
 2. Take the next free number in the set: one more than the highest code in it, deprecated rules
    included. Never reuse a number.
 3. Add a `RuleId` variant, add it to `RuleId::ALL`, and give it its name in `RuleId::name`, its code
-   in `RuleId::code`, `false` in `RuleId::is_deprecated`, its default in
-   `RuleId::checks_tests_by_default`, and whether it can skip test code in
-   `RuleId::has_test_code_mode`. `--rule`, `--skip-tests`, suppression parsing, set selectors and
-   the unknown-rule message pick it up from there.
+   in `RuleId::code`, `false` in `RuleId::is_deprecated`, and its `TestCodeMode` in
+   `RuleId::test_code_mode`. `--rule`, `--skip-tests`, suppression parsing, set selectors and the
+   unknown-rule message pick it up from there.
 4. Add the rule's module under `src/rules/`. Its `Checker` holds the rule's settings and cross-file
    state, and its `check` takes the `FileContext` and returns the rule's diagnostics.
 5. Add a `Rule` variant that holds the checker, with its arms in `Rule::new` and `Rule::check`.
@@ -2232,9 +2232,9 @@ Cargo mode:
 * Adding up `skip-tests` lists across levels, as `excludes` do. A package's list replaces the
   workspace's, as `rules` does, so the package's table says in full which rules skip its test code.
   An exclude is a path that can point into any package, which is why excludes add up.
-* A per-rule default that `comment-greedy-wrap` leaves out. The exhaustive match makes every rule,
-  including a future one, decide, so the rule that has no notion of test code declares `true` and
-  never reads it.
+* Two per-rule `bool`s, whether a rule has a test-code mode and its default. A rule without a
+  test-code mode would still declare a default that nothing reads. One `TestCodeMode` rules that
+  combination out, and its exhaustive match still makes every rule, including a future one, decide.
 * Keeping `include-tests` as a deprecated setting. No release read it, so there is no `Cargo.toml`
   to migrate, and a second key for one setting would need its own precedence rule.
 * Making `--include-tests` act as `--no-skip-tests`. No release read settings, so the flag had no

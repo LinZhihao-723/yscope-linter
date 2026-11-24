@@ -243,7 +243,6 @@ struct SettingsOptions {
         long,
         value_name = "ID",
         num_args = 0..=1,
-        // Without `=`, `--skip-tests` stays bare, so a following `TARGET` isn't read as its list.
         require_equals = true,
         value_delimiter = ',',
         overrides_with_all = ["skip_tests", "no_skip_tests"]

@@ -17,6 +17,7 @@ use crate::config::Width;
 use crate::error::Error;
 use crate::rules::RuleId;
 use crate::rules::RuleSelector;
+use crate::rules::TestCodeMode;
 
 /// The settings that one source gives. Each setting that is `None` is left to the sources it
 /// overrides, and then to the default.
@@ -145,16 +146,22 @@ impl Settings {
             width: self.width.unwrap_or(Width::DEFAULT),
             test_skipping_rules: RuleId::ALL
                 .into_iter()
-                .filter(|rule_id| match &self.skip_tests {
-                    Some(SkipTests::All) => true,
-                    Some(SkipTests::Off) => false,
-                    Some(SkipTests::Listed { rule_selectors }) => {
-                        !rule_id.checks_tests_by_default()
-                            || rule_selectors.iter().any(|selector| {
-                                selector.rule_ids().any(|listed| listed == *rule_id)
-                            })
+                .filter(|rule_id| {
+                    let skips_tests_by_default = match rule_id.test_code_mode() {
+                        TestCodeMode::Unsupported | TestCodeMode::CheckedByDefault => false,
+                        TestCodeMode::SkippedByDefault => true,
+                    };
+                    match &self.skip_tests {
+                        Some(SkipTests::All) => true,
+                        Some(SkipTests::Off) => false,
+                        Some(SkipTests::Listed { rule_selectors }) => {
+                            skips_tests_by_default
+                                || rule_selectors.iter().any(|selector| {
+                                    selector.rule_ids().any(|listed| listed == *rule_id)
+                                })
+                        }
+                        None => skips_tests_by_default,
                     }
-                    None => !rule_id.checks_tests_by_default(),
                 })
                 .collect(),
         }
