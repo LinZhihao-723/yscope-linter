@@ -6,7 +6,7 @@ rule is wrong for that code, and say why in the reason.
 ## Contents
 
 * [Syntax](#syntax)
-* [`allow`: a line, a comment block or a fn](#allow-a-line-a-comment-block-or-a-fn)
+* [`allow`: a line, a statement, a comment block or a fn](#allow-a-line-a-statement-a-comment-block-or-a-fn)
 * [`allow-item`: a whole item](#allow-item-a-whole-item)
 * [`allow-start` and `allow-end`: a region](#allow-start-and-allow-end-a-region)
 * [`allow-file`: the whole file](#allow-file-the-whole-file)
@@ -37,10 +37,16 @@ There are five forms:
   unknown rule.
 * Every form but `allow-end` needs a reason after `):`. The reason must not be blank. `allow-end`
   may have one too.
+* The reason starts on the suppression's line. A reason that starts only on the next line is
+  missing.
+* The reason of an own-line suppression may continue on the next `//` lines of its comment block
+  whose text is indented deeper than the suppression's text, and by at least two spaces, such as
+  `//   reports them`. It ends at the first line that isn't, such as a blank `//` line or a line
+  indented like the suppression.
 * Spaces after `yscope-linter:`, around each rule ID and before the `:` of the reason are optional.
   There must be no space between the form and its `(`.
-* A suppression comment is never part of a `comment-greedy-wrap` paragraph. It also ends the comment
-  block it is in.
+* A suppression comment and the lines its reason continues on are never part of a
+  `comment-greedy-wrap` paragraph. They also end the comment block they are in.
 
 A good reason says why the rule is wrong here, not what the rule checks:
 
@@ -56,18 +62,65 @@ A code or a set works the same as the names it stands for:
 // yscope-linter: allow-file(DOC): the bindings are generated
 ```
 
-## `allow`: a line, a comment block or a fn
+A long reason continues on indented lines, so it fits the width:
+
+```rust
+/// Runs the job.
+///
+/// # Errors
+///
+/// Returns an error if:
+///
+/// * Forwards [`Store::insert`]'s return values on failure.
+fn run(&self, job: Job) -> Result<(), Error> {
+    self.store.insert(&job)?;
+    // yscope-linter: allow(errors-doc): the audit log documents its own errors, and the caller
+    //   reports them
+    self.audit
+        .record(&job)
+        .await?;
+    Ok(())
+}
+```
+
+The continuation lines belong to the suppression, so what the suppression covers starts after them.
+A line that isn't indented deeper ends the reason, so the comment block it starts is what an `allow`
+covers:
+
+```rust
+fn f() {
+    // yscope-linter: allow(comment-greedy-wrap): a hand-aligned frame layout, copied from the
+    //   protocol spec
+    // Layout of a frame:
+    // magic   4 bytes
+    // length  4 bytes
+}
+```
+
+Wrap a long reason by hand. rustfmt's `wrap_comments` keeps the indented lines when each of them
+fits the width, but it wraps a suppression line that overflows onto an unindented `//` line, which
+isn't part of the reason.
+
+## `allow`: a line, a statement, a comment block or a fn
 
 What an `allow` covers depends on where it is:
 
 * A trailing `allow`, after code on its line, covers that line.
 * An own-line `allow` covers the next unit. The unit starts at the first line after it that isn't
-  another own-line suppression:
+  another own-line suppression or a line that a reason continues on:
   * If that line is an own-line comment, the unit is the whole comment block that starts there.
+  * If a statement starts on that line, or the line is among a statement's attributes, the unit
+    runs through the statement's last line.
   * Otherwise, the unit is that one line.
 * Stacked own-line suppressions all cover the same unit.
 * For `errors-doc`, a covered line anywhere in a fn's header covers every finding of the fn. The
   header runs from the fn's first attribute or doc line through its `fn` line.
+
+A statement is a `let`, an expression statement with or without a `;`, including a block's tail
+expression, or a macro statement such as `println!(..);`. Statements nested in blocks and closures
+count too. An item, such as a fn, a `const` or a fn nested in a body, isn't a statement: use
+[`allow-item`](#allow-item-a-whole-item) to cover all of it. The statements are found in the syntax
+tree, so in a file that fails to lex or parse, the unit is one line.
 
 An own-line `allow` above a comment block covers the whole block:
 
@@ -96,7 +149,9 @@ example.rs:2:5: DOC001 comment-greedy-wrap: line is 25 columns wide and the next
 example.rs:3:5: DOC001 comment-greedy-wrap: line is 22 columns wide and the next line's first word `length` (6 columns) fits within 100; move it up
 ```
 
-An own-line `allow` above a code line covers that line:
+An own-line `allow` above a statement covers the whole statement. An `errors-doc` finding for a `?`
+is at the `?`, so on a multi-line chain it is on the statement's last line, which the `allow` covers
+too:
 
 ```rust
 /// Runs the job.
@@ -109,13 +164,47 @@ An own-line `allow` above a code line covers that line:
 fn run(&self, job: Job) -> Result<(), Error> {
     self.store.insert(&job)?;
     // yscope-linter: allow(errors-doc): the audit log documents its own errors
-    self.audit.record(&job)?;
+    self.audit
+        .record(&job)
+        .await?;
     Ok(())
 }
 ```
 
-A trailing `allow` covers only its own line. An `errors-doc` finding for a `?` is at the `?`, so on
-a multi-line chain the suppression goes on the line with the `?`:
+A trailing `allow` on the line with the `?`, `.await?; // yscope-linter: allow(errors-doc): ...`,
+covers it too.
+
+If the statement has no finding, the `allow` is unused, and the message names the statement's lines:
+
+```rust
+/// Runs the job.
+///
+/// # Errors
+///
+/// Returns an error if:
+///
+/// * Forwards [`Store::insert`]'s return values on failure.
+/// * Forwards [`Audit::record`]'s return values on failure.
+fn run(&self, job: Job) -> Result<(), Error> {
+    self.store.insert(&job)?;
+    // yscope-linter: allow(errors-doc): the audit log documents its own errors
+    self.audit
+        .record(&job)
+        .await?;
+    Ok(())
+}
+```
+
+```console
+$ yscope-linter example.rs
+example.rs:11:5: LNT003 unused-suppression: this suppression of errors-doc covers no finding on lines 12-14; remove it
+```
+
+A statement with a block, such as an `if`, a `match`, a loop, or a `let` that holds a closure, runs
+through its closing brace. So an `allow` above it covers every finding of its rules in the whole
+block. To cover one finding inside, put the `allow` above the inner statement.
+
+An `allow` inside a statement covers only the next line, since no statement starts there:
 
 ```rust
 /// Runs the job.
@@ -128,11 +217,22 @@ a multi-line chain the suppression goes on the line with the `?`:
 fn run(&self, job: Job) -> Result<(), Error> {
     self.store.insert(&job)?;
     self.audit
+        // yscope-linter: allow(errors-doc): the audit log documents its own errors
         .record(&job)
-        .await?; // yscope-linter: allow(errors-doc): the audit log documents its own errors
+        .await?;
     Ok(())
 }
 ```
+
+```console
+$ yscope-linter example.rs
+example.rs:11:9: LNT003 unused-suppression: this suppression of errors-doc covers no finding on line 12; remove it
+example.rs:13:15: DOC002 errors-doc: `run` forwards errors from `record`, but `# Errors` does not list it; add "* Forwards [`record`]'s return values on failure."
+```
+
+The statements inside a macro's body, such as the body of `select!` or `stream!`, aren't found,
+since `syn` doesn't parse macro bodies. So an `allow` inside the body covers one line. An `allow`
+above the whole macro statement covers all of it.
 
 An `allow` above a fn's docstring, or between the docstring and the `fn` line, covers every
 `errors-doc` finding of the fn:

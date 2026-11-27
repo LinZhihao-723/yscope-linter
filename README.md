@@ -28,8 +28,8 @@ organization, and a number. A code is never renumbered or reused, and a removed 
 instead. See the [rule index](docs/rules/README.md) for the naming standard and the deprecation
 policy.
 
-A rule can be silenced for a line, a comment block, an item, a region or a file with a suppression
-comment that gives a reason. See [Suppression comments](docs/suppression.md).
+A rule can be silenced for a line, a statement, a comment block, an item, a region or a file with a
+suppression comment that gives a reason. See [Suppression comments](docs/suppression.md).
 
 The design and the internals are in [`docs/design.md`](docs/design.md).
 
