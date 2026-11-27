@@ -350,6 +350,16 @@ struct ClosureBinding {
     tail_callee: Option<Callee>,
 }
 
+/// The bindings of one name, as [`BodyScanner`] keeps them.
+struct NameBindings {
+    closure: Option<ClosureBinding>,
+    error: Option<ErrorSet>,
+    call: Option<Callee>,
+    is_spawned: bool,
+    builder: Option<&'static str>,
+    err_binding_callee: Option<Callee>,
+}
+
 /// How a `map_err` argument transforms an error.
 enum Mapper {
     /// `Into::into`, `From::from`, `X::from`, or a closure returning its parameter converted.
@@ -700,10 +710,12 @@ impl<'ast> BodyScanner<'_, 'ast> {
     /// and anyhow-macro sites leave the fn too, and its value and `return` values are classified at
     /// `site`.
     fn classify_in_place_closure(&mut self, closure: &syn::ExprClosure, site: Site) {
-        let outer_return_site = self.in_place_return_site.replace(site);
-        self.visit_expr(&closure.body);
-        self.in_place_return_site = outer_return_site;
-        self.classify_fallible(&closure.body, site);
+        self.with_hidden_bindings(closure_parameters(closure), |body_scanner| {
+            let outer_return_site = body_scanner.in_place_return_site.replace(site);
+            body_scanner.visit_expr(&closure.body);
+            body_scanner.classify_fallible(&closure.body, site);
+            body_scanner.in_place_return_site = outer_return_site;
+        });
     }
 
     /// Classifies a macro whose value leaves the fn at `site`:
@@ -1768,6 +1780,55 @@ impl<'ast> BodyScanner<'_, 'ast> {
         }
     }
 
+    /// Runs `visit` with the bindings of `names` hidden, and restores them afterwards.
+    fn with_hidden_bindings(&mut self, names: Vec<String>, visit: impl FnOnce(&mut Self)) {
+        let hidden: Vec<(String, NameBindings)> = names
+            .into_iter()
+            .map(|name| {
+                let bindings = self.take_bindings(&name);
+                (name, bindings)
+            })
+            .collect();
+        visit(self);
+        for (name, bindings) in hidden {
+            self.restore_bindings(name, bindings);
+        }
+    }
+
+    /// Removes the bindings of `name`.
+    ///
+    /// # Returns
+    ///
+    /// The removed bindings.
+    fn take_bindings(&mut self, name: &str) -> NameBindings {
+        NameBindings {
+            closure: self.closure_bindings.remove(name),
+            error: self.error_bindings.remove(name),
+            call: self.call_bindings.remove(name),
+            is_spawned: self.spawned_bindings.remove(name),
+            builder: self.builder_bindings.remove(name),
+            err_binding_callee: self.err_binding_callees.remove(name),
+        }
+    }
+
+    /// Replaces the bindings of `name` with `bindings`.
+    fn restore_bindings(&mut self, name: String, bindings: NameBindings) {
+        restore_binding(&mut self.closure_bindings, &name, bindings.closure);
+        restore_binding(&mut self.error_bindings, &name, bindings.error);
+        restore_binding(&mut self.call_bindings, &name, bindings.call);
+        restore_binding(&mut self.builder_bindings, &name, bindings.builder);
+        restore_binding(
+            &mut self.err_binding_callees,
+            &name,
+            bindings.err_binding_callee,
+        );
+        if bindings.is_spawned {
+            self.spawned_bindings.insert(name);
+        } else {
+            self.spawned_bindings.remove(&name);
+        }
+    }
+
     /// # Returns
     ///
     /// The callee of `expr`, after peeling conversions, if it calls a helper that builds errors: a
@@ -2488,6 +2549,46 @@ fn closure_parameter(closure: &syn::ExprClosure) -> Option<String> {
             Some(pat_ident.ident.to_string())
         }
         _ => None,
+    }
+}
+
+/// # Returns
+///
+/// The names that `closure`'s identifier parameter patterns bind.
+fn closure_parameters(closure: &syn::ExprClosure) -> Vec<String> {
+    closure
+        .inputs
+        .iter()
+        .filter_map(|pat| {
+            let pat = match pat {
+                syn::Pat::Type(pat_type) => &*pat_type.pat,
+                pat => pat,
+            };
+            match pat {
+                syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Sets the binding of `name` in `bindings` to `binding`, or removes it if `binding` is [`None`].
+///
+/// # Type Parameters
+///
+/// * `BindingType` - The type of what a binding records.
+fn restore_binding<BindingType>(
+    bindings: &mut HashMap<String, BindingType>,
+    name: &str,
+    binding: Option<BindingType>,
+) {
+    match binding {
+        Some(binding) => {
+            bindings.insert(name.to_owned(), binding);
+        }
+        None => {
+            bindings.remove(name);
+        }
     }
 }
 
@@ -3691,6 +3792,7 @@ mod tests {
             "impl From<Inner> for Outer {\n",
             "    fn from(inner: Inner) -> Self { Self::Inner(inner) }\n",
             "}\n",
+            "fn classify(error: Inner) -> Inner { log(&error); error }\n",
         );
         for (body, expected) in [
             (
@@ -3719,6 +3821,17 @@ mod tests {
                     "        match retry(|| Err(Inner::A)) {\n",
                     "            Ok(()) => Ok(()),\n",
                     "            Err(error) => Err(error),\n",
+                    "        }\n",
+                    "    })?;\n",
+                ),
+                "higher-order retry Outer::Inner|Inner::A",
+            ),
+            (
+                concat!(
+                    "    std::thread::scope(|_| -> Result<(), Inner> {\n",
+                    "        match retry(|| Err(Inner::A)) {\n",
+                    "            Ok(()) => Ok(()),\n",
+                    "            Err(error) => Err(classify(error)),\n",
                     "        }\n",
                     "    })?;\n",
                 ),
@@ -3754,6 +3867,24 @@ mod tests {
         assert!(!facts.has_opaque_source);
 
         let source_text = subject("let r = (|| load())();\nr?;\nOk(())");
+        assert_eq!(obligations_of(&source_text), ["forward load"]);
+    }
+
+    #[test]
+    fn in_place_closure_parameters_shadow_outer_bindings() {
+        for body in [
+            "let r = load();\ndrop(r);\n(|r: Result<(), Error>| { r?; Ok(()) })(store())",
+            "let s = load();\ndrop(s);\nstd::thread::scope(|s| { s?; store() })",
+        ] {
+            let obligations = obligations_of(&subject(body));
+            assert!(
+                !obligations.contains(&"forward load".to_owned()),
+                "obligations of `{body}`: {obligations:?}"
+            );
+        }
+
+        let source_text =
+            subject("let r = load();\n(|r: Result<(), Error>| { r?; Ok(()) })(store())?;\nr");
         assert_eq!(obligations_of(&source_text), ["forward load"]);
     }
 
