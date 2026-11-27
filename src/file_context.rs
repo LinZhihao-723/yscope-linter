@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::config::RuleSet;
+use crate::config::Width;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::DiagnosticKind;
 use crate::diagnostic::Position;
@@ -46,8 +47,9 @@ pub struct FileContext<'source> {
 impl<'source> FileContext<'source> {
     /// Factory function.
     ///
-    /// Lexes the file and splits its suppression comments from its other comments. A lex failure
-    /// keeps the comments before it.
+    /// Lexes the file and splits its suppression comments from its other comments, with the lines
+    /// that their reasons continue on at the run's `width`. A lex failure keeps the comments before
+    /// it.
     ///
     /// # Returns
     ///
@@ -56,6 +58,7 @@ impl<'source> FileContext<'source> {
     pub fn new(
         path: &'source Path,
         source_text: &'source str,
+        width: Width,
         test_module_cache: &'source TestModuleCache,
     ) -> Self {
         let lexed = lexer::lex(source_text);
@@ -63,7 +66,7 @@ impl<'source> FileContext<'source> {
             path,
             source_text,
             lex_error: lexed.error,
-            parsed_comments: suppression::parse(lexed.comment_lines, lexed.header_end),
+            parsed_comments: suppression::parse(lexed.comment_lines, lexed.header_end, width),
             syntax_tree: OnceCell::new(),
             test_module_cache,
             test_module_verdict: OnceCell::new(),
@@ -141,8 +144,8 @@ impl<'source> FileContext<'source> {
     ///   only if the file has such a suppression. If the file fails to lex or parse, each of them
     ///   is an `invalid-suppression` diagnostic.
     /// * An own-line `allow` above a statement covers it through its end. The syntax tree is parsed
-    ///   only if the file has such a suppression. If the file fails to lex or parse, each of them
-    ///   covers one line, with no diagnostic.
+    ///   only if the file has an own-line `allow` above a line that isn't a comment. If the file
+    ///   fails to lex or parse, each such `allow` covers one line, with no diagnostic.
     /// * Suppressions drop the diagnostics they cover, and unused suppressions are reported, as
     ///   [`suppression::Suppressions::apply`] decides with `rule_set`.
     /// * Each malformed or misplaced suppression is an `invalid-suppression` diagnostic.
@@ -169,6 +172,7 @@ impl<'source> FileContext<'source> {
             .chain(self.test_module_diagnostic())
             .collect();
         let Self {
+            source_text,
             lex_error,
             mut parsed_comments,
             ..
@@ -186,7 +190,7 @@ impl<'source> FileContext<'source> {
         if let Some(statement_lines) = statement_lines {
             parsed_comments
                 .suppressions
-                .extend_statements(&statement_lines);
+                .extend_statements(&statement_lines, source_text);
         }
         let lex_diagnostic = lex_error.map(|lex_error| {
             Diagnostic::new(
@@ -324,17 +328,22 @@ mod tests {
 
     fn finished(source_text: &str) -> Vec<(DiagnosticKind, usize, String)> {
         let test_module_cache = TestModuleCache::default();
-        FileContext::new(Path::new("a.rs"), source_text, &test_module_cache)
-            .finish(Vec::new(), &RuleSet::all())
-            .iter()
-            .map(|diagnostic| {
-                (
-                    diagnostic.kind(),
-                    diagnostic.position().line,
-                    diagnostic.message().to_owned(),
-                )
-            })
-            .collect()
+        FileContext::new(
+            Path::new("a.rs"),
+            source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        )
+        .finish(Vec::new(), &RuleSet::all())
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.kind(),
+                diagnostic.position().line,
+                diagnostic.message().to_owned(),
+            )
+        })
+        .collect()
     }
 
     #[test]
@@ -366,7 +375,12 @@ mod tests {
     #[test]
     fn syn_failure_is_one_parse_error_that_names_every_skipped_rule() {
         let test_module_cache = TestModuleCache::default();
-        let context = FileContext::new(Path::new("a.rs"), "fn f( {}\n", &test_module_cache);
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            "fn f( {}\n",
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         for rule_id in [
             RuleId::TypeParamsDoc,
             RuleId::ErrorsDoc,
@@ -387,7 +401,12 @@ mod tests {
             ]
         );
 
-        let context = FileContext::new(Path::new("a.rs"), "fn f( {}\n", &test_module_cache);
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            "fn f( {}\n",
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         assert!(context.syntax_tree(RuleId::SymbolOrder).is_none());
         assert_eq!(
             context.finish(Vec::new(), &RuleSet::all())[0].message(),
@@ -401,7 +420,12 @@ mod tests {
     fn allow_item_locates_its_item_in_the_lazily_parsed_tree() {
         let source_text = "// yscope-linter: allow-item(errors-doc): reason\nfn f() {}\n";
         let test_module_cache = TestModuleCache::default();
-        let context = FileContext::new(Path::new("a.rs"), source_text, &test_module_cache);
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         let finding = Diagnostic::new(
             RuleId::ErrorsDoc.into(),
             Position { line: 2, column: 1 },
@@ -423,11 +447,21 @@ mod tests {
             "finding".to_owned(),
         );
         let test_module_cache = TestModuleCache::default();
-        let context = FileContext::new(Path::new("a.rs"), source_text, &test_module_cache);
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         assert_eq!(context.finish(vec![finding.clone()], &RuleSet::all()), []);
 
         let source_text = format!("{source_text}\"open\n");
-        let context = FileContext::new(Path::new("a.rs"), &source_text, &test_module_cache);
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            &source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         let diagnostics: Vec<_> = context
             .finish(vec![finding], &RuleSet::all())
             .iter()

@@ -119,6 +119,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::config::Width;
     use crate::syntax::test_code::TestModuleCache;
 
     const NO_FINDINGS: [String; 0] = [];
@@ -153,6 +154,7 @@ mod tests {
         let context = FileContext::new(
             Path::new("nonexistent-fixture-directory/subject.rs"),
             source_text,
+            Width::DEFAULT,
             &test_module_cache,
         );
         let mut diagnostics = Checker::new(skip_tests).check(&context);

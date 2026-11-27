@@ -148,6 +148,7 @@ mod tests {
 
     use super::*;
     use crate::config::RuleSet;
+    use crate::config::Width;
     use crate::syntax::test_code::TestModuleCache;
 
     const FIXTURE_PATH: &str = "nonexistent-fixture-directory/subject.rs";
@@ -164,7 +165,12 @@ mod tests {
     fn diagnostics(source_text: &str, skip_tests: bool) -> Vec<Diagnostic> {
         syn::parse_file(source_text).expect("valid file");
         let test_module_cache = TestModuleCache::default();
-        let context = FileContext::new(Path::new(FIXTURE_PATH), source_text, &test_module_cache);
+        let context = FileContext::new(
+            Path::new(FIXTURE_PATH),
+            source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         let mut diagnostics = Checker::new(skip_tests).check(&context);
         diagnostics.sort_by_key(Diagnostic::position);
         diagnostics
@@ -607,7 +613,12 @@ mod tests {
             "pub fn d() {}\n",
         );
         let test_module_cache = TestModuleCache::default();
-        let context = FileContext::new(Path::new(FIXTURE_PATH), source_text, &test_module_cache);
+        let context = FileContext::new(
+            Path::new(FIXTURE_PATH),
+            source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         let rule_diagnostics = Checker::new(false).check(&context);
         assert_eq!(
             format_findings(&rule_diagnostics),

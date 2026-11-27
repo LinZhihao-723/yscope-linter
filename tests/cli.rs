@@ -582,9 +582,8 @@ fn rule_flag_and_suppressions_accept_codes_and_sets() {
 }
 
 #[test]
-fn own_line_allow_covers_a_multi_line_statement_and_a_continued_reason() {
-    let directory =
-        test_directory("own_line_allow_covers_a_multi_line_statement_and_a_continued_reason");
+fn width_flag_decides_where_a_suppression_reason_ends() {
+    let directory = test_directory("width_flag_decides_where_a_suppression_reason_ends");
     write_file(
         &directory,
         "a.rs",
@@ -600,7 +599,7 @@ fn own_line_allow_covers_a_multi_line_statement_and_a_continued_reason() {
             "    self.store.insert(&job)?;\n",
             "    // yscope-linter: allow(errors-doc): the audit log documents its own errors, and \
              the caller\n",
-            "    //   reports them to the user who retries the job\n",
+            "    // reports them to the user\n",
             "    self.audit\n",
             "        .record(&job)\n",
             "        .await?;\n",
@@ -611,8 +610,16 @@ fn own_line_allow_covers_a_multi_line_statement_and_a_continued_reason() {
     let output = run(&directory, &["a.rs"], "");
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout_lines(&output), Vec::<String>::new());
+
+    let output = run(&directory, &["--width", "120", "a.rs"], "");
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "yscope-linter: 0 diagnostics in 1 file checked, 0 generated files skipped\n"
+        stdout_lines(&output),
+        [
+            "a.rs:10:5: LNT003 unused-suppression: this suppression of errors-doc covers no \
+             finding on line 11; remove it",
+            "a.rs:14:15: DOC002 errors-doc: `run` forwards errors from `record`, but `# Errors` \
+             does not list it; add \"* Forwards [`record`]'s return values on failure.\""
+        ]
     );
 }

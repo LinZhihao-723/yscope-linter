@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::config::CheckConfig;
 use crate::config::LintConfig;
 use crate::config::RuleSet;
+use crate::config::Width;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::FileDiagnostic;
 use crate::diff;
@@ -120,6 +121,7 @@ pub fn check(file_groups: Vec<FileGroup>) -> Result<Report, Error> {
 struct FileChecker {
     rule_set: RuleSet,
     rules: Vec<Rule>,
+    width: Width,
 
     /// The out-of-line test module verdicts, shared by the rules through each file's
     /// [`FileContext`].
@@ -140,6 +142,7 @@ impl FileChecker {
                 .map(|rule_id| Rule::new(rule_id, &check_config))
                 .collect(),
             rule_set: check_config.rule_set,
+            width: check_config.width,
             test_module_cache: TestModuleCache::default(),
         }
     }
@@ -165,7 +168,7 @@ impl FileChecker {
         source_text: &str,
         line_filter: &LineFilter,
     ) -> Vec<Diagnostic> {
-        let context = FileContext::new(path, source_text, &self.test_module_cache);
+        let context = FileContext::new(path, source_text, self.width, &self.test_module_cache);
         let rule_diagnostics = self
             .rules
             .iter_mut()
@@ -183,7 +186,6 @@ impl FileChecker {
 mod tests {
     use super::*;
     use crate::config::OutputFormat;
-    use crate::config::Width;
     use crate::diagnostic::DiagnosticKind;
 
     fn file_checker(rule_set: RuleSet) -> FileChecker {
@@ -422,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_with_a_continued_reason_covers_the_statement_below_it() {
+    fn allow_with_a_rustfmt_wrapped_reason_covers_the_statement_below_it() {
         let source_text = concat!(
             "/// Runs the job.\n",
             "///\n",
@@ -435,7 +437,7 @@ mod tests {
             "    self.store.insert(&job)?;\n",
             "    // yscope-linter: allow(errors-doc): the audit log documents its own errors, and \
              the caller\n",
-            "    //   reports them to the user who retries the job\n",
+            "    // reports them to the user\n",
             "    self.audit\n",
             "        .record(&job)\n",
             "        .await?;\n",
@@ -450,8 +452,8 @@ mod tests {
         let source_text = concat!(
             "fn f() {\n",
             "    // yscope-linter: allow(comment-greedy-wrap): the comments in the closure are \
-             copied from\n",
-            "    //   the upstream source\n",
+             copied from the\n",
+            "    // upstream source\n",
             "    let c = || {\n",
             "        // A comment that ends\n",
             "        // early.\n",
@@ -476,7 +478,7 @@ mod tests {
             "/// * Forwards [`a`]'s return values on failure.\n",
             "// yscope-linter: allow(errors-doc): the errors come from the callback the caller \
              provides, so the\n",
-            "//   caller documents them\n",
+            "// caller documents them\n",
             "fn run() -> Result<(), E> {\n",
             "    b()?;\n",
             "    self.audit\n",

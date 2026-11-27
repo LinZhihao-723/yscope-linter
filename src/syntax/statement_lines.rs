@@ -1,9 +1,22 @@
 //! The lines of the statements in a `syn` syntax tree.
 
+use quote::ToTokens;
 use syn::visit::Visit;
 
+use crate::diagnostic::Position;
 use crate::syntax::item_lines;
 use crate::syntax::item_lines::ItemLines;
+use crate::syntax::span;
+
+/// The lines of one statement, and where it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatementLines {
+    pub lines: ItemLines,
+
+    /// The position of the statement's first token, which is the `#` of its first outer attribute
+    /// if it has one.
+    pub start: Position,
+}
 
 /// Collects the lines of every statement of `syntax_tree`, including the statements nested in
 /// blocks, closures and the bodies of nested items. These count as statements:
@@ -17,7 +30,7 @@ use crate::syntax::item_lines::ItemLines;
 /// # Returns
 ///
 /// The lines of the statements, in source order.
-pub fn collect(syntax_tree: &syn::File) -> Vec<ItemLines> {
+pub fn collect(syntax_tree: &syn::File) -> Vec<StatementLines> {
     let mut statement_collector = StatementCollector {
         statement_lines: Vec::new(),
     };
@@ -25,9 +38,9 @@ pub fn collect(syntax_tree: &syn::File) -> Vec<ItemLines> {
     statement_collector.statement_lines
 }
 
-/// The `syn` visitor that collects the [`ItemLines`] of statements.
+/// The `syn` visitor that collects the [`StatementLines`] of statements.
 struct StatementCollector {
-    statement_lines: Vec<ItemLines>,
+    statement_lines: Vec<StatementLines>,
 }
 
 impl<'ast> Visit<'ast> for StatementCollector {
@@ -36,8 +49,14 @@ impl<'ast> Visit<'ast> for StatementCollector {
             syn::Stmt::Local(_) | syn::Stmt::Expr(..) | syn::Stmt::Macro(_) => true,
             syn::Stmt::Item(_) => false,
         };
-        if is_counted && let Some(statement_lines) = item_lines::of(stmt) {
-            self.statement_lines.push(statement_lines);
+        if is_counted
+            && let Some(lines) = item_lines::of(stmt)
+            && let Some(first_token) = stmt.to_token_stream().into_iter().next()
+        {
+            self.statement_lines.push(StatementLines {
+                lines,
+                start: span::start_position(first_token.span()),
+            });
         }
         syn::visit::visit_stmt(self, stmt);
     }
@@ -47,14 +66,15 @@ impl<'ast> Visit<'ast> for StatementCollector {
 mod tests {
     use super::*;
 
-    fn lines(source_text: &str) -> Vec<(String, String)> {
+    fn lines(source_text: &str) -> Vec<(String, String, (usize, usize))> {
         let syntax_tree = syn::parse_file(source_text).expect("valid file");
         collect(&syntax_tree)
             .into_iter()
             .map(|statement_lines| {
                 (
-                    statement_lines.span.to_string(),
-                    statement_lines.header.to_string(),
+                    statement_lines.lines.span.to_string(),
+                    statement_lines.lines.header.to_string(),
+                    (statement_lines.start.line, statement_lines.start.column),
                 )
             })
             .collect()
@@ -81,14 +101,21 @@ mod tests {
         );
         let spans: Vec<_> = lines(source_text)
             .into_iter()
-            .map(|(span, _)| span)
+            .map(|(span, ..)| span)
             .collect();
         assert_eq!(spans, ["2", "3-5", "6-8", "9-12", "10", "11", "14"]);
     }
 
     #[test]
-    fn headers_run_from_the_first_attribute_to_the_statement() {
+    fn headers_and_starts_are_at_the_first_attribute() {
         let source_text = "fn f() {\n    #[allow(unused)]\n    let w = c(\n        1,\n    );\n}\n";
-        assert_eq!(lines(source_text), [("2-5".to_owned(), "2-3".to_owned())]);
+        assert_eq!(
+            lines(source_text),
+            [("2-5".to_owned(), "2-3".to_owned(), (2, 5))]
+        );
+        assert_eq!(
+            lines("fn f() { let a = 1; }\n"),
+            [("1".to_owned(), "1".to_owned(), (1, 10))]
+        );
     }
 }

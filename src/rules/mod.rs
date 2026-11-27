@@ -1,7 +1,7 @@
 //! The lint rules.
 
 mod errors_doc;
-mod greedy_wrap;
+pub mod greedy_wrap;
 mod registry;
 mod symbol_order;
 mod trait_params_doc;

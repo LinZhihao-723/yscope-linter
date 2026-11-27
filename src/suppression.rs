@@ -21,6 +21,7 @@ use std::iter::Peekable;
 use std::vec;
 
 use crate::config::RuleSet;
+use crate::config::Width;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::DiagnosticKind;
 use crate::diagnostic::Position;
@@ -30,7 +31,9 @@ use crate::line_ranges::LineSpan;
 use crate::rules::InvalidRuleSelector;
 use crate::rules::RuleId;
 use crate::rules::RuleSelector;
+use crate::rules::greedy_wrap;
 use crate::syntax::item_lines::ItemLines;
+use crate::syntax::statement_lines::StatementLines;
 
 /// One valid suppression, with the lines it covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,11 +194,18 @@ impl Suppressions {
     /// Extends each own-line `allow` suppression whose unit is a line that isn't a comment through
     /// the statement on that line:
     ///
-    /// * The statements are those of `statement_lines` whose header holds the unit's line, so the
-    ///   line is where a statement starts, or among its attributes.
+    /// * The statements are those of `statement_lines` whose header holds the unit's line, and that
+    ///   start at or before the first token of the line in `source_text`. So the line starts with a
+    ///   statement, or is among its attributes, and a statement that starts after other code on the
+    ///   line, such as one in a fn body opened on the line, doesn't count.
     /// * The unit then runs from that line through the latest last line of these statements.
     ///   Without one, it stays one line.
-    pub fn extend_statements(&mut self, statement_lines: &[ItemLines]) {
+    ///
+    /// # Panics
+    ///
+    /// Panics if a statement's header holds a line after the statement's last line, which
+    /// [`crate::syntax::item_lines::of`] never produces.
+    pub fn extend_statements(&mut self, statement_lines: &[StatementLines], source_text: &str) {
         for suppression in &mut self.suppressions {
             let Scope::Unit {
                 lines,
@@ -205,14 +215,19 @@ impl Suppressions {
                 continue;
             };
             let target_line = lines.first();
+            let Some(first_token) = first_token_position(source_text, target_line) else {
+                continue;
+            };
             if let Some(last_line) = statement_lines
                 .iter()
-                .filter(|statement| statement.header.contains(target_line))
-                .map(|statement| statement.span.last())
+                .filter(|statement| {
+                    statement.lines.header.contains(target_line) && statement.start <= first_token
+                })
+                .map(|statement| statement.lines.span.last())
                 .max()
-                && let Some(extended) = LineSpan::new(target_line, last_line)
             {
-                *lines = extended;
+                *lines = LineSpan::new(target_line, last_line)
+                    .expect("a statement ends at or after its header's line");
             }
         }
     }
@@ -284,10 +299,10 @@ pub struct ParsedComments {
 /// Splits a file's comment lines into suppressions and the rest.
 ///
 /// A suppression candidate is a plain `//` comment whose trimmed text starts with `yscope-linter:`.
-/// The reason of an own-line candidate that parses with a reason continues on the following lines
-/// of its comment block that aren't blank or candidates and whose text is indented deeper than both
-/// the candidate's text and one space. The reason ends at the first line that isn't, and its lines
-/// belong to the candidate.
+/// The reason of an own-line candidate that parses with a reason continues on the next line of its
+/// comment block while that line isn't empty or a candidate, and the line above it is full at
+/// `width`, as [`greedy_wrap::is_full`] decides. The reason ends at the first line that doesn't
+/// continue it, and its lines belong to the candidate.
 ///
 /// The lines a valid suppression covers depend on its form:
 ///
@@ -317,8 +332,12 @@ pub struct ParsedComments {
 ///
 /// Panics if a covered unit ends before it starts, which [`CommentLine::continues_block`] rules
 /// out.
-pub fn parse(comment_lines: Vec<CommentLine>, header_end: Option<Position>) -> ParsedComments {
-    let (candidates, remaining_comment_lines) = split_candidates(comment_lines);
+pub fn parse(
+    comment_lines: Vec<CommentLine>,
+    header_end: Option<Position>,
+    width: Width,
+) -> ParsedComments {
+    let (candidates, remaining_comment_lines) = split_candidates(comment_lines, width);
     let own_line_candidate_lines: Vec<usize> = candidates
         .iter()
         .filter(|candidate| candidate.comment_line.is_own_line)
@@ -340,14 +359,14 @@ pub fn parse(comment_lines: Vec<CommentLine>, header_end: Option<Position>) -> P
 
     let mut parser = Parser::default();
     for Candidate {
-        comment_line: candidate,
+        comment_line,
         directive,
         ..
     } in candidates
     {
         let position = Position {
-            line: candidate.line,
-            column: candidate.marker_column,
+            line: comment_line.line,
+            column: comment_line.marker_column,
         };
         let Directive {
             kind,
@@ -361,7 +380,7 @@ pub fn parse(comment_lines: Vec<CommentLine>, header_end: Option<Position>) -> P
                 continue;
             }
         };
-        if let Some(invalid) = kind.misplacement(candidate.is_own_line, position, header_end) {
+        if let Some(invalid) = kind.misplacement(comment_line.is_own_line, position, header_end) {
             parser.reject(invalid, position);
             continue;
         }
@@ -375,8 +394,8 @@ pub fn parse(comment_lines: Vec<CommentLine>, header_end: Option<Position>) -> P
         }
         match kind {
             SuppressionKind::Allow => {
-                let scope = if candidate.is_own_line {
-                    let first = next_unit_start(candidate.line);
+                let scope = if comment_line.is_own_line {
+                    let first = next_unit_start(comment_line.line);
                     let block_last = own_line_comment_indices
                         .get(&first)
                         .map(|index| block_last_line(&remaining_comment_lines, *index));
@@ -388,7 +407,7 @@ pub fn parse(comment_lines: Vec<CommentLine>, header_end: Option<Position>) -> P
                     }
                 } else {
                     Scope::Unit {
-                        lines: LineSpan::single(candidate.line),
+                        lines: LineSpan::single(comment_line.line),
                         is_statement_unit: false,
                     }
                 };
@@ -402,7 +421,7 @@ pub fn parse(comment_lines: Vec<CommentLine>, header_end: Option<Position>) -> P
                 parser.unlocated_items.push(UnlocatedItem {
                     position,
                     rule_ids,
-                    target_line: next_unit_start(candidate.line),
+                    target_line: next_unit_start(comment_line.line),
                 });
             }
             SuppressionKind::AllowStart => parser.open_regions(position, rule_ids),
@@ -899,8 +918,8 @@ impl Candidate {
     /// Factory function.
     ///
     /// Parses the text of the suppression candidate `comment_line`. If it is an own-line candidate
-    /// that parses with a reason, the lines its reason continues on, as [`is_reason_continuation`]
-    /// decides, are taken from the front of `following_lines`.
+    /// that parses with a reason, the lines its reason continues on at `width`, as
+    /// [`is_reason_continuation`] decides, are taken from the front of `following_lines`.
     ///
     /// # Returns
     ///
@@ -908,6 +927,7 @@ impl Candidate {
     fn new(
         comment_line: CommentLine,
         following_lines: &mut Peekable<vec::IntoIter<CommentLine>>,
+        width: Width,
     ) -> Self {
         let directive = Directive::parse(&comment_line.text);
         let mut last_line = comment_line.line;
@@ -917,11 +937,7 @@ impl Candidate {
         {
             let mut previous: Option<CommentLine> = None;
             while let Some(continuation) = following_lines.next_if(|next| {
-                is_reason_continuation(
-                    next,
-                    previous.as_ref().unwrap_or(&comment_line),
-                    &comment_line,
-                )
+                is_reason_continuation(next, previous.as_ref().unwrap_or(&comment_line), width)
             }) {
                 last_line = continuation.line;
                 previous = Some(continuation);
@@ -948,7 +964,7 @@ fn is_candidate(comment_line: &CommentLine) -> bool {
 }
 
 /// Splits `comment_lines` into the suppression candidates, each with the lines that its reason
-/// continues on, and the other comment lines.
+/// continues on at `width`, and the other comment lines.
 ///
 /// # Returns
 ///
@@ -957,13 +973,16 @@ fn is_candidate(comment_line: &CommentLine) -> bool {
 /// * The candidates, in source order.
 /// * The comment lines that are neither candidates nor lines that their reasons continue on, in
 ///   source order.
-fn split_candidates(comment_lines: Vec<CommentLine>) -> (Vec<Candidate>, Vec<CommentLine>) {
+fn split_candidates(
+    comment_lines: Vec<CommentLine>,
+    width: Width,
+) -> (Vec<Candidate>, Vec<CommentLine>) {
     let mut candidates = Vec::new();
     let mut remaining_comment_lines = Vec::new();
     let mut comment_lines = comment_lines.into_iter().peekable();
     while let Some(comment_line) = comment_lines.next() {
         if is_candidate(&comment_line) {
-            candidates.push(Candidate::new(comment_line, &mut comment_lines));
+            candidates.push(Candidate::new(comment_line, &mut comment_lines, width));
         } else {
             remaining_comment_lines.push(comment_line);
         }
@@ -973,28 +992,35 @@ fn split_candidates(comment_lines: Vec<CommentLine>) -> (Vec<Candidate>, Vec<Com
 
 /// # Returns
 ///
-/// Whether the reason of the own-line suppression candidate `suppression` continues on
-/// `comment_line`, which follows `previous`, the candidate or the last line its reason continues on
-/// so far. It does when `comment_line` continues their comment block, isn't blank or a candidate,
-/// and its text is indented deeper than both `suppression`'s text and one space.
+/// Whether the reason of an own-line suppression candidate continues on `comment_line`, which
+/// follows `previous`, the candidate or the last line its reason continues on so far. It does when
+/// `comment_line` continues their comment block, isn't empty or a candidate, and `previous` is full
+/// before it at `width`, as [`greedy_wrap::is_full`] decides.
 fn is_reason_continuation(
     comment_line: &CommentLine,
     previous: &CommentLine,
-    suppression: &CommentLine,
+    width: Width,
 ) -> bool {
     comment_line.continues_block(previous)
         && !is_candidate(comment_line)
         && !comment_line.text.trim().is_empty()
-        && indent_width(&comment_line.text) > indent_width(&suppression.text).max(1)
+        && greedy_wrap::is_full(previous, comment_line, width)
 }
 
 /// # Returns
 ///
-/// The number of whitespace characters that `text` starts with.
-fn indent_width(text: &str) -> usize {
-    text.chars()
+/// The position of the first token on the 1-based line `line` of `source_text`, or [`None`] if the
+/// line is blank or past the end of the text.
+fn first_token_position(source_text: &str, line: usize) -> Option<Position> {
+    let text = source_text.lines().nth(line - 1)?;
+    let indent = text
+        .chars()
         .take_while(|character| character.is_whitespace())
-        .count()
+        .count();
+    (indent < text.chars().count()).then_some(Position {
+        line,
+        column: indent + 1,
+    })
 }
 
 /// # Returns
@@ -1038,6 +1064,8 @@ fn join_rule_ids(rule_ids: &[RuleId]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::*;
     use crate::lexer;
     use crate::syntax::item_lines;
@@ -1049,17 +1077,22 @@ mod tests {
     const END_ERRORS_DOC: &str = "// yscope-linter: allow-end(errors-doc)\n";
     const FILE_ERRORS_DOC: &str = "// yscope-linter: allow-file(errors-doc): reason\n";
 
-    /// Parses the suppressions of `source_text`, locates the items of its `allow-item` suppressions
-    /// in its syntax tree, and extends its own-line `allow` suppressions through the statements
-    /// they precede if it parses.
+    /// Parses the suppressions of `source_text` as [`parse_source_at`] does, at the default width.
+    fn parse_source(source_text: &str) -> ParsedComments {
+        parse_source_at(source_text, Width::DEFAULT)
+    }
+
+    /// Parses the suppressions of `source_text` at `width`, locates the items of its `allow-item`
+    /// suppressions in its syntax tree, and extends its own-line `allow` suppressions through the
+    /// statements they precede if it parses.
     ///
     /// # Panics
     ///
     /// Panics if `source_text` doesn't lex, or has an `allow-item` suppression and doesn't parse.
-    fn parse_source(source_text: &str) -> ParsedComments {
+    fn parse_source_at(source_text: &str, width: Width) -> ParsedComments {
         let lexed = lexer::lex(source_text);
         assert_eq!(lexed.error, None);
-        let mut parsed = parse(lexed.comment_lines, lexed.header_end);
+        let mut parsed = parse(lexed.comment_lines, lexed.header_end, width);
         if parsed.suppressions.has_unlocated_items() {
             let syntax_tree = syn::parse_file(source_text).expect("valid file");
             let invalid = parsed
@@ -1072,7 +1105,7 @@ mod tests {
         {
             parsed
                 .suppressions
-                .extend_statements(&statement_lines::collect(&syntax_tree));
+                .extend_statements(&statement_lines::collect(&syntax_tree), source_text);
         }
         parsed
     }
@@ -1148,6 +1181,13 @@ mod tests {
             .iter()
             .map(|diagnostic| diagnostic.message().to_owned())
             .collect()
+    }
+
+    /// # Returns
+    ///
+    /// The line `prefix` padded with `a`s to `columns` columns, with a line break.
+    fn padded(prefix: &str, columns: usize) -> String {
+        format!("{prefix}{}\n", "a".repeat(columns - prefix.chars().count()))
     }
 
     fn finding(rule_id: RuleId, line: usize) -> Diagnostic {
@@ -1507,7 +1547,7 @@ mod tests {
     #[test]
     fn rejected_items_are_invalid_suppressions_that_name_the_reason() {
         let lexed = lexer::lex(&format!("{ITEM_ERRORS_DOC}fn f() {{}}\n"));
-        let mut parsed = parse(lexed.comment_lines, lexed.header_end);
+        let mut parsed = parse(lexed.comment_lines, lexed.header_end, Width::DEFAULT);
         let invalid: Vec<_> = parsed
             .suppressions
             .reject_items("the file failed to parse")
@@ -1824,17 +1864,26 @@ mod tests {
     }
 
     #[test]
-    fn allow_above_statements_that_share_a_line_covers_through_the_last_end() {
+    fn allow_extends_only_through_statements_that_start_its_line() {
+        let source_text = concat!(
+            "fn f() {\n",
+            "    // yscope-linter: allow(comment-greedy-wrap): reason\n",
+            "    fn g() { let c = || {\n",
+            "        // A comment that ends\n",
+            "        // early.\n",
+            "    }; }\n",
+            "}\n",
+        );
+        assert_eq!(covered_spans(&parse_source(source_text)), ["3"]);
         let source_text = concat!(
             "fn f() {\n",
             "    // yscope-linter: allow(errors-doc): reason\n",
             "    a()?; b(\n",
             "        1,\n",
             "    )?;\n",
-            "    c()?;\n",
             "}\n",
         );
-        assert_eq!(covered_spans(&parse_source(source_text)), ["3-5"]);
+        assert_eq!(covered_spans(&parse_source(source_text)), ["3"]);
     }
 
     #[test]
@@ -1900,92 +1949,146 @@ mod tests {
     }
 
     #[test]
-    fn reason_continues_on_deeper_indented_lines_and_leaves_the_comment_stream() {
+    fn rustfmt_wrapped_reason_continues_and_covers_the_statement_below() {
         let source_text = concat!(
             "fn f() {\n",
             "    // yscope-linter: allow(errors-doc): the audit log documents its own errors, and \
              the caller\n",
-            "    //   reports them\n",
-            "    //   to the user\n",
-            "    a()?;\n",
-            "}\n",
-        );
-        assert_eq!(covered_spans(&parse_source(source_text)), ["5"]);
-        assert_eq!(remaining_lines(source_text), Vec::<usize>::new());
-        assert_eq!(invalid(source_text), []);
-    }
-
-    #[test]
-    fn continued_reason_above_a_multi_line_statement_covers_the_statement() {
-        let source_text = concat!(
-            "fn f() {\n",
-            "    // yscope-linter: allow(errors-doc): the audit log documents its own errors, and \
-             the caller\n",
-            "    //   reports them\n",
-            "    //   to the user\n",
+            "    // reports them to the user\n",
             "    self.audit\n",
             "        .record(&job)\n",
             "        .await?;\n",
             "}\n",
         );
-        assert_eq!(covered_spans(&parse_source(source_text)), ["5-7"]);
+        let parsed = parse_source(source_text);
+        assert_eq!(covered_spans(&parsed), ["4-6"]);
+        assert_eq!(parsed.comment_lines, []);
+        assert_eq!(parsed.invalid_suppressions, []);
+    }
+
+    #[test]
+    fn reason_continues_while_the_line_above_is_full() {
+        let source_text = format!(
+            "{}{}// c\n// Block.\nfn f() {{}}\n",
+            padded("// yscope-linter: allow(errors-doc): ", 97),
+            padded("// ", 100),
+        );
+        assert_eq!(covered_spans(&parse_source(&source_text)), ["4"]);
+        assert_eq!(remaining_lines(&source_text), [4]);
+
+        let source_text = format!(
+            "{}// more\nfn f() {{}}\n",
+            padded("// yscope-linter: allow(errors-doc): ", 104),
+        );
+        assert_eq!(covered_spans(&parse_source(&source_text)), ["3"]);
+    }
+
+    #[test]
+    fn reason_ends_where_the_next_word_fits_on_the_line_above() {
+        let source_text = format!(
+            "{}// more\nfn f() {{}}\n",
+            padded("// yscope-linter: allow(errors-doc): ", 95),
+        );
+        assert_eq!(covered_spans(&parse_source(&source_text)), ["2"]);
+        assert_eq!(remaining_lines(&source_text), [2]);
+    }
+
+    #[test]
+    fn hand_aligned_block_after_a_short_reason_is_covered_whatever_its_indent() {
+        let source_text = concat!(
+            "// yscope-linter: allow(comment-greedy-wrap): the sample below is aligned by hand\n",
+            "//     magic   4 bytes\n",
+            "//     length  4 bytes\n",
+            "fn f() {}\n",
+        );
+        assert_eq!(covered_spans(&parse_source(source_text)), ["2-3"]);
+        assert_eq!(remaining_lines(source_text), [2, 3]);
+
+        let source_text = concat!(
+            "// yscope-linter: allow(comment-greedy-wrap): the sample below is aligned by hand\n",
+            "//\n",
+            "//     magic   4 bytes\n",
+            "//     length  4 bytes\n",
+            "fn f() {}\n",
+        );
+        assert_eq!(covered_spans(&parse_source(source_text)), ["2-4"]);
+        assert_eq!(remaining_lines(source_text), [2, 3, 4]);
+    }
+
+    #[test]
+    fn empty_line_ends_a_full_reason_and_starts_the_covered_block() {
+        let source_text = format!(
+            "{}//\n// Layout of a\n// frame:\nfn f() {{}}\n",
+            padded("// yscope-linter: allow(comment-greedy-wrap): ", 100),
+        );
+        assert_eq!(covered_spans(&parse_source(&source_text)), ["2-4"]);
+        assert_eq!(remaining_lines(&source_text), [2, 3, 4]);
+    }
+
+    #[test]
+    fn code_span_moves_as_a_whole_when_measuring_fill() {
+        let source_text = format!(
+            "{}// `foo bar` baz\nfn f() {{}}\n",
+            padded("// yscope-linter: allow(errors-doc): ", 92),
+        );
+        assert_eq!(covered_spans(&parse_source(&source_text)), ["3"]);
+        assert_eq!(remaining_lines(&source_text), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn width_decides_whether_a_reason_line_is_full() {
+        let source_text = format!(
+            "{}// reports them\nfn f() {{}}\n",
+            padded("// yscope-linter: allow(errors-doc): ", 95),
+        );
+        assert_eq!(covered_spans(&parse_source(&source_text)), ["3"]);
+        let width = Width::new(NonZeroUsize::new(120).expect("120 is non-zero"));
+        assert_eq!(covered_spans(&parse_source_at(&source_text, width)), ["2"]);
     }
 
     #[test]
     fn stacked_allows_with_continued_reasons_cover_the_same_statement() {
-        let source_text = concat!(
-            "fn f() {\n",
-            "    // yscope-linter: allow(errors-doc): reason\n",
-            "    //   more\n",
-            "    // yscope-linter: allow(comment-greedy-wrap): reason\n",
-            "    //   more\n",
-            "    self.audit\n",
-            "        .record()\n",
-            "        .await?;\n",
-            "}\n",
+        let source_text = format!(
+            "fn f() {{\n{}    // more\n{}    // more\n    self.audit\n        .record()\n        \
+             .await?;\n}}\n",
+            padded("    // yscope-linter: allow(errors-doc): ", 100),
+            padded("    // yscope-linter: allow(comment-greedy-wrap): ", 100),
         );
-        let parsed = parse_source(source_text);
+        let parsed = parse_source(&source_text);
         assert_eq!(covered_spans(&parsed), ["6-8", "6-8"]);
         assert_eq!(parsed.invalid_suppressions, []);
-        assert_eq!(remaining_lines(source_text), Vec::<usize>::new());
+        assert_eq!(parsed.comment_lines, []);
     }
 
     #[test]
-    fn continuation_ends_at_the_first_line_not_indented_deeper() {
-        for suppression in [
-            "// yscope-linter: allow(comment-greedy-wrap): a hand-aligned frame layout that the \
-             spec\n",
-            "//yscope-linter: allow(comment-greedy-wrap): a hand-aligned frame layout that the \
-             spec\n",
-        ] {
-            let source_text = format!(
-                "{suppression}//   defines\n// Layout of a frame:\n// magic   4 bytes\nfn f() \
-                 {{}}\n"
-            );
-            let parsed = parse_source(&source_text);
-            assert_eq!(covered_spans(&parsed), ["3-4"], "{suppression:?}");
-            assert_eq!(remaining_lines(&source_text), [3, 4], "{suppression:?}");
-        }
-        let source_text = "// yscope-linter: allow(comment-greedy-wrap): reason\n//   \n// Layout \
-                           of a\n// frame:\nfn f() {}\n";
-        assert_eq!(covered_spans(&parse_source(source_text)), ["2-4"]);
-        let source_text = "//yscope-linter: allow(comment-greedy-wrap): reason\n// Layout of \
-                           a\n// frame:\nfn f() {}\n";
-        assert_eq!(covered_spans(&parse_source(source_text)), ["2-3"]);
-        assert_eq!(remaining_lines(source_text), [2, 3]);
+    fn candidate_after_a_full_reason_line_is_a_suppression_of_its_own() {
+        let source_text = format!(
+            "{}// yscope-linter: allow(comment-greedy-wrap): reason\n// A block.\n",
+            padded("// yscope-linter: allow(errors-doc): ", 100),
+        );
+        assert_eq!(covered_spans(&parse_source(&source_text)), ["3", "3"]);
     }
 
     #[test]
     fn allow_item_region_and_misplaced_reasons_may_continue() {
-        let source_text = format!("{ITEM_ERRORS_DOC}//   more\nfn f() {{\n}}\n");
+        let source_text = format!(
+            "{}// more\nfn f() {{\n}}\n",
+            padded("// yscope-linter: allow-item(errors-doc): ", 100),
+        );
         assert_eq!(covered_lines(&source_text, RuleId::ErrorsDoc, 5), [3, 4]);
         assert_eq!(invalid(&source_text), []);
 
-        let source_text = format!("{START_ERRORS_DOC}//   more\na\n{END_ERRORS_DOC}");
+        let source_text = format!(
+            "{}// more\na\n{END_ERRORS_DOC}",
+            padded("// yscope-linter: allow-start(errors-doc): ", 100),
+        );
         assert_eq!(invalid(&source_text), []);
         assert_eq!(remaining_lines(&source_text), Vec::<usize>::new());
 
-        let source_text = format!("fn f() {{}}\n{FILE_ERRORS_DOC}//   more\n");
+        let source_text = format!(
+            "fn f() {{}}\n{}// more\n",
+            padded("// yscope-linter: allow-file(errors-doc): ", 100),
+        );
         assert_eq!(remaining_lines(&source_text), Vec::<usize>::new());
         assert_eq!(
             invalid(&source_text),
@@ -2000,44 +2103,31 @@ mod tests {
 
     #[test]
     fn invalid_reasonless_or_trailing_suppressions_have_no_continuation() {
+        let indent = " ".repeat(64);
         for source_text in [
-            "// yscope-linter: allow(errors_doc): reason\n//   more\n",
-            "// yscope-linter: allow-end(errors-doc)\n//   more\n",
-            "a(); // yscope-linter: allow(errors-doc): r\n//   more\n",
-            "// yscope-linter: allow(errors-doc):\n//   the reason\n",
+            format!(
+                "{}{indent}// more\n",
+                padded("// yscope-linter: allow(errors_doc): ", 100)
+            ),
+            format!("{indent}// yscope-linter: allow-end(errors-doc)\n{indent}// more\n"),
+            format!("{indent}// yscope-linter: allow(errors-doc):\n{indent}// more\n"),
+            format!(
+                "{}// more\n",
+                padded("a(); // yscope-linter: allow(errors-doc): ", 100)
+            ),
         ] {
-            assert_eq!(remaining_lines(source_text), [2], "{source_text:?}");
+            assert_eq!(remaining_lines(&source_text), [2], "{source_text:?}");
         }
-        let missing_reason = invalid("// yscope-linter: allow(errors-doc):\n//   the reason\n");
-        assert_eq!(
-            missing_reason,
-            [(
-                1,
-                "suppression needs a reason after `):`; expected `// yscope-linter: \
-                 allow(<rule-id>[, <rule-id>]...): <reason>`"
-                    .to_owned()
-            )]
-        );
-    }
-
-    #[test]
-    fn indented_candidate_after_a_reason_is_a_suppression_of_its_own() {
-        let source_text = concat!(
-            "// yscope-linter: allow(errors-doc): reason\n",
-            "//   yscope-linter: allow(comment-greedy-wrap): reason\n",
-            "// A block.\n",
-        );
-        let parsed = parse_source(source_text);
-        assert_eq!(covered_spans(&parsed), ["3", "3"]);
     }
 
     #[test]
     fn continuation_needs_the_same_block() {
-        let source_text = format!("{ALLOW_ERRORS_DOC}  //   more\nfn f() {{}}\n");
+        let suppression = padded("// yscope-linter: allow(errors-doc): ", 100);
+        let source_text = format!("{suppression}  // more\nfn f() {{}}\n");
         assert_eq!(remaining_lines(&source_text), [2]);
         assert_eq!(covered_spans(&parse_source(&source_text)), ["2"]);
 
-        let source_text = format!("{ALLOW_ERRORS_DOC}///   Doc.\n///   More.\nfn f() {{}}\n");
+        let source_text = format!("{suppression}/// Doc.\n/// More.\nfn f() {{}}\n");
         assert_eq!(remaining_lines(&source_text), [2, 3]);
         assert_eq!(covered_spans(&parse_source(&source_text)), ["2-3"]);
     }

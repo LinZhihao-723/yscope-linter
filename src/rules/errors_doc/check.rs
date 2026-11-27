@@ -875,6 +875,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::config::Width;
     use crate::line_ranges::LineSpan;
     use crate::syntax::test_code::TestModuleCache;
 
@@ -913,6 +914,7 @@ mod tests {
         let context = FileContext::new(
             Path::new("nonexistent-fixture-directory/subject.rs"),
             source_text,
+            Width::DEFAULT,
             &test_module_cache,
         );
         let mut diagnostics = Checker::new(false).check(&context);
@@ -1239,6 +1241,7 @@ mod tests {
         let context = FileContext::new(
             Path::new("nonexistent-fixture-directory/subject.rs"),
             &source_text,
+            Width::DEFAULT,
             &test_module_cache,
         );
         let diagnostics = Checker::new(false).check(&context);

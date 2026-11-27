@@ -7,3 +7,4 @@ mod paragraph;
 mod rustfmt_lists;
 
 pub use check::Checker;
+pub use check::is_full;
