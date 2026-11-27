@@ -6,7 +6,7 @@ rule is wrong for that code, and say why in the reason.
 ## Contents
 
 * [Syntax](#syntax)
-* [`allow`: a line, a statement, a comment block or a fn](#allow-a-line-a-statement-a-comment-block-or-a-fn)
+* [`allow`: a line, a comment block or a fn](#allow-a-line-a-comment-block-or-a-fn)
 * [`allow-item`: a whole item](#allow-item-a-whole-item)
 * [`allow-start` and `allow-end`: a region](#allow-start-and-allow-end-a-region)
 * [`allow-file`: the whole file](#allow-file-the-whole-file)
@@ -39,10 +39,16 @@ There are five forms:
   may have one too.
 * The reason starts on the suppression's line. A reason that starts only on the next line is
   missing.
-* The reason of an own-line suppression may continue on the next `//` lines of its comment block
-  whose text is indented deeper than the suppression's text, and by at least two spaces, such as
-  `//   reports them`. It ends at the first line that isn't, such as a blank `//` line or a line
-  indented like the suppression.
+* The reason of an own-line suppression continues on the next `//` line of its comment block when
+  the line above it is full: the next line's first word doesn't fit on it within the width. Fill is
+  measured as [`comment-greedy-wrap`](rules/comment-greedy-wrap.md) measures it, at the same width
+  (`--width`, 100 by default), and a code span or a link counts as one word. The reason goes on
+  while each of its lines is full, and ends at the first line that doesn't continue it:
+  * An empty `//` line always ends the reason.
+  * Another suppression is a suppression of its own, stacked on this one.
+  * Any other line starts what the suppression covers. Indentation plays no part.
+* Only an own-line suppression with a reason continues. A trailing suppression, an `allow-end`
+  without a reason and an invalid suppression continue on no line.
 * Spaces after `yscope-linter:`, around each rule ID and before the `:` of the reason are optional.
   There must be no space between the form and its `(`.
 * A suppression comment and the lines its reason continues on are never part of a
@@ -62,7 +68,9 @@ A code or a set works the same as the names it stands for:
 // yscope-linter: allow-file(DOC): the bindings are generated
 ```
 
-A long reason continues on indented lines, so it fits the width:
+A long reason can be wrapped by rustfmt's `wrap_comments` or by hand. rustfmt fills each line before
+it starts the next, so the reason it wraps is still one reason. A reason wrapped by hand must fill
+its lines the same way:
 
 ```rust
 /// Runs the job.
@@ -75,7 +83,7 @@ A long reason continues on indented lines, so it fits the width:
 fn run(&self, job: Job) -> Result<(), Error> {
     self.store.insert(&job)?;
     // yscope-linter: allow(errors-doc): the audit log documents its own errors, and the caller
-    //   reports them
+    // reports them to the user
     self.audit
         .record(&job)
         .await?;
@@ -83,25 +91,39 @@ fn run(&self, job: Job) -> Result<(), Error> {
 }
 ```
 
+In a field or parameter list, rustfmt wraps comments one column early (see [Running with
+rustfmt](rules/comment-greedy-wrap.md#running-with-rustfmt)). A reason that it wraps there can end
+one column short of full, which ends the reason. Reword the reason if that happens.
+
 The continuation lines belong to the suppression, so what the suppression covers starts after them.
-A line that isn't indented deeper ends the reason, so the comment block it starts is what an `allow`
-covers:
+A line that isn't full ends the reason, so a comment block right after a short reason is what an
+`allow` covers:
 
 ```rust
 fn f() {
-    // yscope-linter: allow(comment-greedy-wrap): a hand-aligned frame layout, copied from the
-    //   protocol spec
+    // yscope-linter: allow(comment-greedy-wrap): the sample below is aligned by hand
+    // magic   4 bytes
+    // length  4 bytes
+}
+```
+
+Separating a covered comment block from the reason with an empty `//` line is recommended. It is
+needed when the reason's last line is full, since the block's first line would then continue the
+reason. It also keeps rustfmt from joining the end of an overlong reason with the block's first
+line when it wraps the reason:
+
+```rust
+fn f() {
+    // yscope-linter: allow(comment-greedy-wrap): the frame layout below is copied by hand from the
+    // protocol specification
+    //
     // Layout of a frame:
     // magic   4 bytes
     // length  4 bytes
 }
 ```
 
-Wrap a long reason by hand. rustfmt's `wrap_comments` keeps the indented lines when each of them
-fits the width, but it wraps a suppression line that overflows onto an unindented `//` line, which
-isn't part of the reason.
-
-## `allow`: a line, a statement, a comment block or a fn
+## `allow`: a line, a comment block or a fn
 
 What an `allow` covers depends on where it is:
 
@@ -109,8 +131,8 @@ What an `allow` covers depends on where it is:
 * An own-line `allow` covers the next unit. The unit starts at the first line after it that isn't
   another own-line suppression or a line that a reason continues on:
   * If that line is an own-line comment, the unit is the whole comment block that starts there.
-  * If a statement starts on that line, or the line is among a statement's attributes, the unit
-    runs through the statement's last line.
+  * If a statement starts at that line's first token, or the line is among a statement's
+    attributes, the unit runs through the statement's last line.
   * Otherwise, the unit is that one line.
 * Stacked own-line suppressions all cover the same unit.
 * For `errors-doc`, a covered line anywhere in a fn's header covers every finding of the fn. The

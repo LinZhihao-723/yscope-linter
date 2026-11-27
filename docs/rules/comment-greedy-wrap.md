@@ -346,8 +346,8 @@ These are never checked:
 * Block comments, `/* */`, and block doc comments, `/** */` and `/*! */`.
 * Text that looks like a comment inside a string, raw string or char literal, or inside a block
   comment.
-* Suppression comments, such as `// yscope-linter: allow(comment-greedy-wrap): ...`, and the
-  indented lines that their reasons continue on. They are not part of any paragraph. See
+* Suppression comments, such as `// yscope-linter: allow(comment-greedy-wrap): ...`, and the lines
+  that their reasons continue on. They are not part of any paragraph. See
   [Suppression comments](../suppression.md).
 
 ```rust

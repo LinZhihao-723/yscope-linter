@@ -1835,17 +1835,22 @@ Every diagnostic has the item's span as its anchor and the item's header as its 
 The suppression forms and their user-facing semantics are in
 [`docs/suppression.md`](suppression.md). This section describes `src/suppression.rs`.
 
-`suppression::parse(comment_lines, header_end)` runs inside `FileContext::new`, before any rule:
+`suppression::parse(comment_lines, header_end, width)` runs inside `FileContext::new`, before any
+rule, with the run's `comment-greedy-wrap` width:
 
 * A comment line is a candidate when it is a plain `//` comment and its trimmed text starts with
   `yscope-linter:`. Doc comments are never candidates, so a suppression can't leak into rustdoc.
 * `split_candidates` parses each candidate once with `Directive::parse` into a `Candidate`. The
   reason of an own-line candidate whose directive parses with a reason (`Directive.has_reason`)
   continues on the following lines for which `is_reason_continuation` holds: the line continues the
-  block (`CommentLine::continues_block`), isn't blank or a candidate, and its text has more leading
-  whitespace than both the candidate's text and one space. These lines are taken from the stream,
-  and `Candidate.last_line` is the last of them. A misplaced candidate continues too, since its
-  reason is still a reason. An invalid or reasonless one, or a trailing one, continues on no line.
+  block (`CommentLine::continues_block`), isn't empty or a candidate, and the line above it, the
+  candidate or the last continuation line, is full before it. `greedy_wrap::is_full` decides that
+  with the rule's own fit test (`UnderfilledLine::find` on the two lines as one paragraph), so the
+  width, the column counting and the code spans and links that move whole are those of
+  `comment-greedy-wrap`, and a reason that rustfmt's `wrap_comments` wraps stays one reason. These
+  lines are taken from the stream, and `Candidate.last_line` is the last of them. A misplaced
+  candidate continues too, since its reason is still a reason. An invalid or reasonless one, or a
+  trailing one, continues on no line. Indentation plays no part.
 * Candidates and their continuation lines are removed from the comment stream that
   `comment_lines()` returns. The removed lines break the run of consecutive lines, so a candidate of
   any form, valid or not, ends a `comment-greedy-wrap` block.
@@ -1902,10 +1907,12 @@ A statement unit is extended in `FileContext::finish` too, after the `allow-item
 * `syntax/statement_lines.rs` collects every `syn::Stmt` but `Stmt::Item`, nested ones included,
   with `item_lines::of`, so each has a span and a header from its first attribute through the line
   where the statement itself starts.
-* `extend_statements` takes the statements whose header holds the unit's line, and the unit then
-  runs through the latest of their last lines. An item in a body, a line inside a statement, or a
-  statement in a macro body that `syn` doesn't parse, has no such statement, so its unit stays one
-  line.
+* `statement_lines::collect` also records each statement's start, the position of its first token.
+* `extend_statements` takes the statements whose header holds the unit's line and that start at or
+  before the line's first token in the source text, and the unit then runs through the latest of
+  their last lines. An item in a body, a line inside a statement, a statement that starts after
+  other code on the line, or a statement in a macro body that `syn` doesn't parse, has no such
+  statement, so its unit stays one line.
 * When the file failed to lex or parse, every unit stays one line, with no diagnostic.
 
 Since `covers` checks the fn header of a diagnostic against a `Unit`'s lines, an extended unit also
