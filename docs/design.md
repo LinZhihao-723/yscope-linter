@@ -915,9 +915,9 @@ holding the self names, the generic type parameters, whether its fns are associa
 type of a trait impl:
 
 * `visit_item_impl` pushes the self type's last segment and the trait's name as self names, with the
-  impl's type parameters, and marks the context as associated. For a trait impl, the self type's
-  last segment is also the trait impl's self type, unless the self type isn't a path or is a type
-  parameter of the impl, as in `impl<T: Inner> Outer for T`.
+  impl's type parameters, and marks the context as associated. For a trait impl, it also records
+  the self type's last segment as `trait_impl_self_type`, unless the self type isn't a path or is a
+  type parameter of the impl, as in `impl<T: Inner> Outer for T`.
 * `visit_item_trait` pushes the trait's name, with its type parameters, as an associated context.
 * `visit_item_fn`, `visit_impl_item_fn` and `visit_trait_item_fn` record the fn, then recurse into
   its body in a fresh, non-associated context. So nested fns, impls and modules are checked on their
@@ -1403,7 +1403,8 @@ of three outcomes, which `BodyScanner::self_call_recursion` decides as a `Recurs
   before trait methods, so the call forwards that fn like any other call, spelled as written.
 * `Possible`: the same, but the file has no such inherent fn. Another file may declare it, so the
   call records its callee as a nested callee only. A bullet for it is kept, and a missing bullet
-  isn't reported.
+  isn't reported. A `self.name(..)` call's nested callee is `Self::name`, since an unqualified one
+  would keep the bullet of any fn whose last segment is `name`.
 
 #### Higher-order calls
 

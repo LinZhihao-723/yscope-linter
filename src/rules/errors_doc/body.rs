@@ -317,7 +317,7 @@ struct Callee {
     /// The position of the callee's last path segment or method name.
     position: Position,
 
-    /// Whether the call is a call of the scanned fn.
+    /// How certainly the call calls the scanned fn.
     recursion: Recursion,
 
     /// The errors that the closures passed to the call build and return. They leave the fn through
@@ -325,7 +325,7 @@ struct Callee {
     closure_error_set: ErrorSet,
 }
 
-/// Whether a call is a call of the scanned fn.
+/// How certainly a call calls the scanned fn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Recursion {
     /// The call calls another fn.
@@ -910,7 +910,9 @@ impl<'ast> BodyScanner<'_, 'ast> {
     ///   the name is qualified by the builder's type, such as `QueryAs::fetch_all`. The earlier
     ///   method calls of its chain are alternative spellings, so `find(..).with_options(..)` is
     ///   spelled `with_options` and `find`. A call at the chain's root, such as
-    ///   `SpiderClient::builder(..)` in `SpiderClient::builder(..).connect()`, is not.
+    ///   `SpiderClient::builder(..)` in `SpiderClient::builder(..).connect()`, is not. A possibly
+    ///   recursive `self.name(..)` call, as [`Self::self_call_recursion`] decides, is spelled
+    ///   `Self::name` instead.
     /// * `block_on(x)` and `.block_on(x)` give the callee of `x`.
     /// * A call that passes callables is completed by [`Self::with_callable_args`].
     ///
@@ -947,20 +949,26 @@ impl<'ast> BodyScanner<'_, 'ast> {
                 if is_value_method(&method) {
                     return None;
                 }
-                let mut spellings = Spellings::new(self.method_path(method_call));
-                for chain_method in chain_methods(&method_call.receiver) {
-                    spellings.push(chain_method);
-                }
+                let recursion = if method == self.fn_item.name
+                    && is_ident_path(peel_parens(&method_call.receiver), "self")
+                {
+                    self.self_call_recursion(None)
+                } else {
+                    Recursion::No
+                };
+                let spellings = if recursion == Recursion::Possible {
+                    Spellings::new(SymbolPath::parse(&format!("Self::{method}"))?)
+                } else {
+                    let mut spellings = Spellings::new(self.method_path(method_call));
+                    for chain_method in chain_methods(&method_call.receiver) {
+                        spellings.push(chain_method);
+                    }
+                    spellings
+                };
                 let callee = Callee {
                     spellings,
                     position: span::start_position(method_call.method.span()),
-                    recursion: if method == self.fn_item.name
-                        && is_ident_path(peel_parens(&method_call.receiver), "self")
-                    {
-                        self.self_call_recursion("Self")
-                    } else {
-                        Recursion::No
-                    },
+                    recursion,
                     closure_error_set: ErrorSet::default(),
                 };
                 Some(self.with_callable_args(callee, &method_call.args))
@@ -1282,13 +1290,16 @@ impl<'ast> BodyScanner<'_, 'ast> {
             return closure_binding.tail_callee.clone();
         }
         let last_segment = path.segments.last()?;
-        let recursion = match symbol_path.qualifier() {
-            _ if symbol_path.last() != self.fn_item.name => Recursion::No,
-            None if !self.fn_item.is_associated => Recursion::Certain,
-            Some(qualifier) if self.fn_item.scope.is_self_name(qualifier) => {
-                self.self_call_recursion(qualifier)
+        let recursion = if symbol_path.last() == self.fn_item.name {
+            match symbol_path.qualifier() {
+                None if !self.fn_item.is_associated => Recursion::Certain,
+                Some(qualifier) if self.fn_item.scope.is_self_name(qualifier) => {
+                    self.self_call_recursion(Some(qualifier))
+                }
+                _ => Recursion::No,
             }
-            _ => Recursion::No,
+        } else {
+            Recursion::No
         };
         Some(Callee {
             spellings: Spellings::new(symbol_path),
@@ -1298,11 +1309,11 @@ impl<'ast> BodyScanner<'_, 'ast> {
         })
     }
 
-    /// Decides whether a call of the scanned fn's name through `qualifier`, a name of `Self`, calls
-    /// the fn. `self.name(..)` is a call through `Self`.
+    /// Decides how certainly a call of the scanned fn's name through `qualifier`, a name of `Self`,
+    /// calls the fn. A [`None`] qualifier is a call through `self.`, as in `self.name(..)`.
     ///
-    /// In a trait impl, a call through `Self` or the self type calls the type's inherent fn of the
-    /// name if there is one:
+    /// In a trait impl, a call through `Self`, the self type or `self.` calls the type's inherent
+    /// fn of the name if there is one:
     ///
     /// * If an inherent impl of the file has it, the call isn't recursive.
     /// * Otherwise another file may have it, so the call is possibly recursive.
@@ -1313,12 +1324,14 @@ impl<'ast> BodyScanner<'_, 'ast> {
     /// # Returns
     ///
     /// The call's recursion.
-    fn self_call_recursion(&self, qualifier: &str) -> Recursion {
+    fn self_call_recursion(&self, qualifier: Option<&str>) -> Recursion {
         let Some(self_type) = self
             .fn_item
             .trait_impl_self_type
             .as_deref()
-            .filter(|self_type| qualifier == "Self" || qualifier == *self_type)
+            .filter(|self_type| {
+                qualifier.is_none_or(|qualifier| qualifier == "Self" || qualifier == *self_type)
+            })
         else {
             return Recursion::Certain;
         };
@@ -3453,7 +3466,7 @@ mod tests {
             assert_eq!(obligations_of(&trait_impl(inherent)), Vec::<String>::new());
             assert_eq!(
                 nested_callees_of(&trait_impl(inherent)),
-                ["S::subject", "Self::subject", "subject"]
+                ["S::subject", "Self::subject"]
             );
         }
         assert_eq!(

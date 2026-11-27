@@ -1671,15 +1671,14 @@ mod tests {
     #[test]
     fn same_name_self_calls_in_trait_impls_forward_the_inherent_fn_or_nothing() {
         let trait_impl = |inherent: &str, bullet: &str, call: &str| {
-            let errors_section = concat!(
+            let head = concat!(
+                "impl Submitter for Client {\n",
                 "    /// # Errors\n",
                 "    ///\n",
                 "    /// Returns an error if:\n",
             );
-            format!(
-                "{inherent}impl Submitter for Client {{\n{errors_section}{bullet}    fn \
-                 submit(&self) -> Result<(), Error> {{\n        Ok({call}?)\n    }}\n}}\n"
-            )
+            let signature = "    fn submit(&self) -> Result<(), Error> {\n";
+            format!("{inherent}{head}{bullet}{signature}        Ok({call}?)\n    }}\n}}\n")
         };
         let inherent = concat!(
             "impl Client {\n",
@@ -1688,24 +1687,32 @@ mod tests {
             "    }\n",
             "}\n",
         );
-        let bullet = concat!(
-            "    ///\n",
-            "    /// * Forwards [`Client::submit`]'s return values on failure.\n",
-        );
+        let forwards_bullet = |path: &str| {
+            format!("    ///\n    /// * Forwards [`{path}`]'s return values on failure.\n")
+        };
+        let bullet = forwards_bullet("Client::submit");
         for call in [
             "Self::submit(self)",
             "Client::submit(self)",
             "self.submit()",
         ] {
-            for bullet in [bullet, ""] {
+            for optional_bullet in [bullet.as_str(), &forwards_bullet("Self::submit"), ""] {
                 assert_eq!(
-                    all_findings(&trait_impl("", bullet, call)),
+                    all_findings(&trait_impl("", optional_bullet, call)),
                     Vec::<String>::new(),
-                    "`{call}` with bullet `{bullet}`"
+                    "`{call}` with bullet `{optional_bullet}`"
                 );
             }
             assert_eq!(
-                checked(&trait_impl(inherent, bullet, call)),
+                checked(&trait_impl("", &forwards_bullet("Other::submit"), call)),
+                [
+                    "6:5: \"Forwards [`Other::submit`]\" names a function whose errors `submit` \
+                     never forwards"
+                ],
+                "`{call}`"
+            );
+            assert_eq!(
+                checked(&trait_impl(inherent, &bullet, call)),
                 Vec::<String>::new(),
                 "`{call}`"
             );
@@ -1725,7 +1732,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            checked(&trait_impl("", bullet, "Submitter::submit(self)")),
+            checked(&trait_impl("", &bullet, "Submitter::submit(self)")),
             [
                 "6:5: \"Forwards [`Client::submit`]\" names a function whose errors `submit` \
                  never forwards"

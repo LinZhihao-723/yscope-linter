@@ -1249,8 +1249,10 @@ The rule reads syntax, not types. These cases are known to be wrong or incomplet
   inside an inline module of the parent, are checked as non-test code.
 * A trait impl method's same-name call through `Self::`, its type or `self.` is matched to an
   inherent fn of the file by the last segment of the impl's type only, and receiver kinds are
-  ignored. So an inherent `send` of an unrelated `Client` in a nested module makes the call a
-  forward, and the call of a `Box<Client>` impl is an optional forward although it is recursion.
+  ignored. Inherent impls in `#[cfg(test)]` code count too. So an inherent `submit` of an unrelated
+  `Client` in a nested module, or a test-only inherent `submit`, makes the call of a non-test trait
+  impl a forward, and the call of a `Box<Client>` impl is an optional forward although it is
+  recursion.
 
 When the rule is wrong for a fn, suppress it with a reason, rather than bending the docstring:
 
