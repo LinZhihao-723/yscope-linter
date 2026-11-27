@@ -1149,16 +1149,20 @@ A closure that a call runs in place (see [Values that leave the fn](#values-that
 the exception. When `classify_fallible` classifies the call in a return position,
 `classify_in_place_closure` visits the closure's body a second time, at the call's depth, so its
 `?`, `return` and anyhow-macro sites are the fn's. While it visits, `in_place_return_site` holds the
-call's site, so `visit_expr_return` classifies the closure's `return` values there, as the closure's
-value is, and a `?` after the call converts them. `with_nested_scope` clears it, so a `return` in a
-nested closure stays that closure's. The walk's own visit of the closure still counts it as a nested
-scope, so the closure's callees are nested callees too, and a closure in any other position stays
-nested. Visiting a body twice records nothing twice that matters: the comparison dedups obligations
-by `ObligationKey`, the facts other than `obligations` are sets, `forwarded_sites` is checked before
-an anyhow macro is recorded, and the bindings are recomputed the same way. An in-place closure at
-the tail of another one in a return position is visited twice per visit of the outer one, so the
-visits grow exponentially with the nesting depth of in-place closures in return positions. Real code
-nests one or two.
+call's site, which `return_site` gives in place of `Tail`. So `visit_expr_return` classifies the
+closure's `return` values there, as the closure's value is, and so does match-forwarding for the
+`Err(binding)` arms it handles. A `?` after the call converts them, as it converts the errors that
+`wrap_binding` records. `with_nested_scope` clears it, so a `return` in a nested closure stays that
+closure's. The walk's own visit of the closure still counts it as a nested scope, so the closure's
+callees are nested callees too, and a closure in any other position stays nested. Visiting a body
+twice records nothing twice that matters: the comparison dedups obligations by `ObligationKey`, the
+facts other than `obligations` are sets, `forwarded_sites` is checked before an anyhow macro is
+recorded, and the bindings are recomputed. They come out the same unless the closure shadows a
+binding it used earlier: a tail closure is visited a second time after the walk has seen its `let`s,
+so the earlier use resolves to the shadowing binding (see [Known limits](#known-limits)). An
+in-place closure at the tail of another one in a return position is visited twice per visit of the
+outer one, so the visits grow exponentially with the nesting depth of in-place closures in return
+positions. Real code nests one or two.
 
 `BodyFacts` holds:
 
@@ -1343,7 +1347,8 @@ e).await)` in `match insert(..).await` forwards `insert`, and `classify`'s other
 `classify_fallible(expr, site)` classifies a value at a `Try` or `Tail` site. It peels `.await` and
 parentheses, then takes the first case that applies:
 
-1. An awaited `spawn(..)` or `spawn_blocking(..)`: an `OpaqueError` site, since `?` turns its join
+1. An awaited `spawn(..)` or `spawn_blocking(..)`, directly or as the value of a closure that runs
+   in place (`(|| tokio::spawn(..))().await`): an `OpaqueError` site, since `?` turns its join
    error into some variant of the fn's error type.
 2. A conversion (`x.into()`, `Into::into(x)`, `X::from(x)`): classify `x`. A converted value that
    isn't a call is an `OpaqueSource` site, so a tail `r.into()` never suggests forwarding `into`.
@@ -2186,6 +2191,15 @@ Errors the scan can't attribute:
   names the receiver's callee (`(|| ..)().context(..)?`), or in a `match` whose `Err(e)` arm wraps
   the error. Bindings store no syntax, so the first can't be deferred. Re-visiting the second would
   record a plain `Forward` where the adaptor makes the error an `Either`.
+* The bindings are flat per fn: a `let` inside a closure or a block replaces the outer binding of
+  the same name for the rest of the walk. For a tail in-place closure that uses a binding and then
+  shadows it (`let result = load(); std::thread::scope(|_| { result?; let result = store(); result
+  })`), the second visit resolves the earlier use to the shadowing binding, so `load` isn't
+  required. Saving and restoring the binding maps around closures and blocks would fix it.
+* The async exclusion of in-place closures is syntactic. A closure whose value is a future without
+  a literal `async` block, such as `(|| Box::pin(async { .. }))().await?` or
+  `(|| async { .. }.boxed())().await?`, runs in place, and its value forwards the wrapper
+  (`Box::pin`, `boxed`), as the same future written without the closure does.
 * `IN_PLACE_FNS` is matched by last segment, so any fn named `scope` or `block_in_place` whose only
   argument is a closure runs it in place, `crossbeam::scope` included, whose `Err` is a panic
   payload. Method forms (`pool.scope(..)`, `span.in_scope(..)`) aren't recognized.

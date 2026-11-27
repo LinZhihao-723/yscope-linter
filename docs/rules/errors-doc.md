@@ -770,15 +770,15 @@ A closure that runs in place is part of the fn when the call's value leaves the 
 position. Its value is the call's value, so its `?` sites, `return`s, anyhow macros and value are
 checked as the fn's own. Its value and `return` values leave the fn where the call does, so a `?`
 after the call converts them with `From`, as it converts the call's value. Two kinds of closures run
-in place:
+in place, unless the closure is `async` or its body is an `async` block:
 
 * The only argument of a fn whose last segment is `scope` or `block_in_place`, such as
   `std::thread::scope(|scope| ..)` and `tokio::task::block_in_place(|| ..)`.
-* A closure called on the spot, `(|| ..)()`, unless it is `async` or its body is an `async` block.
+* A closure called on the spot, `(|| ..)()`.
 
-Closures passed to `std::thread::spawn`, `tokio::spawn`, `scope.spawn(..)` and other functions that
-run them elsewhere stay the closure's. So does a closure called on the spot whose result the fn
-handles, as the `cleanup` below:
+The `?` sites of closures passed to `std::thread::spawn`, `tokio::spawn`, `scope.spawn(..)` and
+other functions that run them elsewhere stay the closure's. So do those of a closure called on the
+spot whose result the fn handles, as the `cleanup` below:
 
 ```rust
 /// Runs the job.
@@ -1309,13 +1309,16 @@ The rule reads syntax, not types. These cases are known to be wrong or incomplet
   such as `let create = |d| create_dir_all(d).context(".."); create(a)?`, needs a Forwards bullet
   for the receiver's callee. A bullet for `anyhow::Error`, or for the variants the mapper builds,
   doesn't document it.
-* A closure that runs in place keeps its `?` sites and `return`s, and their errors aren't required,
-  when its call isn't itself in a return position. Examples:
+* A closure that runs in place keeps its `?` sites and `return`s to itself, and their errors aren't
+  required, when its call isn't itself in a return position. Examples:
   * Its result is bound with `let` and returned later: `let result = (|| ..)(); result?`.
   * Its call is under `.context(..)`, `.with_context(..)` or `.map_err(..)`, as in
     `(|| ..)().context(..)?`. Only the call in the closure's value is required.
 * Any fn whose last segment is `scope` or `block_in_place` and whose only argument is a closure is
   treated as running it in place.
+* A `let` inside a closure replaces an outer binding of the same name for the rest of the fn. So in
+  `let result = load(); std::thread::scope(|_| { result?; let result = store(); result })` at the
+  fn's tail, `result?` is taken as a forward of `store`, and `load` isn't required.
 * When the rule skips test code, out-of-line `#[cfg(test)]` modules declared with `#[path]`, or
   inside an inline module of the parent, are checked as non-test code.
 * A trait impl method's same-name call through `Self::`, its type or `self.` is matched to an
