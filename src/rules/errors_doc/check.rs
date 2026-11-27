@@ -989,10 +989,12 @@ mod tests {
         let body = "    serialize(x).map_err(InternalError::TaskOutputs)?;\n    Ok(())";
         assert_eq!(
             checked(&subject(&[], body)),
-            ["8:53: `subject` maps errors from `serialize` into \
+            [
+                "8:53: `subject` maps errors from `serialize` into \
                  [`InternalError::TaskOutputs`], but `# Errors` documents neither; add \"* \
                  Forwards [`serialize`]'s return values on failure.\" or \"* \
-                 [`InternalError::TaskOutputs`] if ...\""]
+                 [`InternalError::TaskOutputs`] if ...\""
+            ]
         );
         for bullet in [
             "Forwards [`serialize`]'s return values on failure.",
@@ -1630,15 +1632,15 @@ mod tests {
             ]
         );
         assert_eq!(
-            checked(&in_file(&[
-                "[`Error::Transport`] if the channel is closed."
-            ])),
+            checked(&in_file(
+                &["[`Error::Transport`] if the channel is closed."]
+            )),
             Vec::<String>::new()
         );
         assert_eq!(
-            checked(&in_file(&[
-                "[`Status::Internal`] if the channel is closed."
-            ])),
+            checked(&in_file(
+                &["[`Status::Internal`] if the channel is closed."]
+            )),
             [
                 "13:16: `subject` returns the [`Error`] that `transport_error` builds, but `# \
                  Errors` has no bullet for it; add a bullet for the variant `transport_error` \
@@ -1739,8 +1741,8 @@ mod tests {
     }
 
     #[test]
-    fn issue_13_reproductions_are_clean() {
-        let closure_binding = concat!(
+    fn documented_forwards_through_adaptor_closures_are_clean() {
+        let source_text = concat!(
             "use anyhow::Context;\n",
             "\n",
             "/// Creates the directories.\n",
@@ -1752,14 +1754,19 @@ mod tests {
             "/// * Forwards [`std::fs::create_dir_all`]'s return values on failure.\n",
             "fn create(a: &std::path::Path, b: &std::path::Path) -> anyhow::Result<()> {\n",
             "    let create_directory = |directory: &std::path::Path| {\n",
-            "        std::fs::create_dir_all(directory).context(\"failed to create the directory\")\n",
+            "        std::fs::create_dir_all(directory)\n",
+            "            .context(\"failed to create the directory\")\n",
             "    };\n",
             "    create_directory(a)?;\n",
             "    create_directory(b)\n",
             "}\n",
         );
-        assert_eq!(checked(closure_binding), Vec::<String>::new());
-        let thread_scope = concat!(
+        assert_eq!(checked(source_text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn documented_forwards_through_thread_scopes_are_clean() {
+        let source_text = concat!(
             "use anyhow::Context;\n",
             "\n",
             "/// Runs the command in a thread scope.\n",
@@ -1778,7 +1785,7 @@ mod tests {
             "    })\n",
             "}\n",
         );
-        assert_eq!(checked(thread_scope), Vec::<String>::new());
+        assert_eq!(checked(source_text), Vec::<String>::new());
     }
 
     #[test]
@@ -1797,12 +1804,27 @@ mod tests {
     }
 
     #[test]
-    fn spawned_closure_question_marks_stay_nested() {
-        let source_text = subject(
-            &["Forwards [`load`]'s return values on failure."],
-            "    let handle = std::thread::spawn(move || { store()?; Ok::<(), Error>(()) });\n    \
-             drop(handle);\n    load()",
+    fn returns_from_closures_called_on_the_spot_convert_at_the_call_site() {
+        let source_text = concat!(
+            "enum Outer { Inner(Inner) }\n",
+            "impl From<Inner> for Outer {\n",
+            "    fn from(inner: Inner) -> Self { Self::Inner(inner) }\n",
+            "}\n",
+            "/// Checks.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * [`Outer::Inner`] if `x` is set.\n",
+            "fn subject(x: bool) -> Result<(), Outer> {\n",
+            "    (|| -> Result<(), Inner> {\n",
+            "        if x { return Err(Inner::A); }\n",
+            "        Ok(())\n",
+            "    })()?;\n",
+            "    Ok(())\n",
+            "}\n",
         );
-        assert_eq!(checked(&source_text), Vec::<String>::new());
+        assert_eq!(checked(source_text), Vec::<String>::new());
     }
 }

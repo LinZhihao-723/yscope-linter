@@ -1148,14 +1148,17 @@ fn. Nested items aren't entered at all (`visit_item` doesn't recurse).
 A closure that a call runs in place (see [Values that leave the fn](#values-that-leave-the-fn)) is
 the exception. When `classify_fallible` classifies the call in a return position,
 `classify_in_place_closure` visits the closure's body a second time, at the call's depth, so its
-`?`, `return` and anyhow-macro sites are the fn's. The walk's own visit of the closure still counts
-it as a nested scope, so the closure's callees are nested callees too, and a closure in any other
-position stays nested. Visiting a body twice records nothing twice that matters: the comparison
-dedups obligations by `ObligationKey`, the facts other than `obligations` are sets,
-`forwarded_sites` is checked before an anyhow macro is recorded, and the bindings are recomputed the
-same way. An in-place closure at the tail of another one in a return position is visited twice per
-visit of the outer one, so the visits grow exponentially with the nesting depth of in-place closures
-in return positions. Real code nests one or two.
+`?`, `return` and anyhow-macro sites are the fn's. While it visits, `in_place_return_site` holds the
+call's site, so `visit_expr_return` classifies the closure's `return` values there, as the closure's
+value is, and a `?` after the call converts them. `with_nested_scope` clears it, so a `return` in a
+nested closure stays that closure's. The walk's own visit of the closure still counts it as a nested
+scope, so the closure's callees are nested callees too, and a closure in any other position stays
+nested. Visiting a body twice records nothing twice that matters: the comparison dedups obligations
+by `ObligationKey`, the facts other than `obligations` are sets, `forwarded_sites` is checked before
+an anyhow macro is recorded, and the bindings are recomputed the same way. An in-place closure at
+the tail of another one in a return position is visited twice per visit of the outer one, so the
+visits grow exponentially with the nesting depth of in-place closures in return positions. Real code
+nests one or two.
 
 `BodyFacts` holds:
 
@@ -1387,7 +1390,7 @@ parentheses, then takes the first case that applies:
 15. A call that runs a closure in place: the closure called on the spot, `(|..| ..)(..)`, or the
     only argument of an `IN_PLACE_FNS` fn, such as `std::thread::scope(|scope| ..)`, unless the
     closure is `async` or its body is an `async` block. The closure's body is visited at the current
-    depth, and its value is classified at the same site.
+    depth, and its value and `return` values are classified at the same site.
 16. Any other call or method call: `Forward(callee_of(expr))`, or `HigherOrder` when it has closure
     errors. A call whose callee can't be named, such as `(self.callback)(..)`, is an `OpaqueSource`
     site.

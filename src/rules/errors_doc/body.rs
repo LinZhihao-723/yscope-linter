@@ -217,6 +217,7 @@ pub fn scan<'ast>(fn_item: &FnItem<'ast>, file_index: &FileIndex<'ast>) -> BodyF
         builder_bindings: HashMap::new(),
         forwarded_sites: HashSet::new(),
         err_binding_callees: HashMap::new(),
+        in_place_return_site: None,
         facts: BodyFacts::default(),
     };
     if let Some(block) = fn_item.block {
@@ -428,6 +429,10 @@ struct BodyScanner<'context, 'ast> {
     /// `if let` branches binds, by binding name, such as `foo` for `e` in `Err(e) => ..` of
     /// `match foo()`.
     err_binding_callees: HashMap<String, Callee>,
+
+    /// The site where the value of the in-place closure being visited leaves the fn, if any.
+    /// `return`s in its body leave the fn there too.
+    in_place_return_site: Option<Site>,
 
     facts: BodyFacts,
 }
@@ -692,9 +697,12 @@ impl<'ast> BodyScanner<'_, 'ast> {
 
     /// Classifies a closure that a call runs in place, whose value is the call's value and leaves
     /// the fn at `site`. The closure's body is visited at the current depth, so its `?`, `return`
-    /// and anyhow-macro sites leave the fn too, and its value is classified at `site`.
+    /// and anyhow-macro sites leave the fn too, and its value and `return` values are classified at
+    /// `site`.
     fn classify_in_place_closure(&mut self, closure: &syn::ExprClosure, site: Site) {
+        let outer_return_site = self.in_place_return_site.replace(site);
         self.visit_expr(&closure.body);
+        self.in_place_return_site = outer_return_site;
         self.classify_fallible(&closure.body, site);
     }
 
@@ -1911,11 +1919,13 @@ impl<'ast> BodyScanner<'_, 'ast> {
         );
     }
 
-    /// Runs `visit` inside a nested scope, where `?` doesn't leave the fn.
+    /// Runs `visit` inside a nested scope, where `?` and `return` don't leave the fn.
     fn with_nested_scope(&mut self, visit: impl FnOnce(&mut Self)) {
+        let outer_return_site = self.in_place_return_site.take();
         self.nested_scope_depth += 1;
         visit(self);
         self.nested_scope_depth -= 1;
+        self.in_place_return_site = outer_return_site;
     }
 }
 
@@ -2025,7 +2035,8 @@ impl<'node> Visit<'node> for BodyScanner<'_, '_> {
 
     fn visit_expr_return(&mut self, expr_return: &'node syn::ExprReturn) {
         if let Some(returned) = &expr_return.expr {
-            self.classify_fallible(returned, Site::Tail);
+            let site = self.in_place_return_site.unwrap_or(Site::Tail);
+            self.classify_fallible(returned, site);
         }
         syn::visit::visit_expr_return(self, expr_return);
     }
@@ -2184,8 +2195,8 @@ fn peel_await_and_parens(mut expr: &syn::Expr) -> &syn::Expr {
 
 /// # Returns
 ///
-/// `expr` without `.await`, parentheses, pass-through adaptors such as `.map(..)`, and the error
-/// adaptors `.map_err(..)`, `.context(..)` and `.with_context(..)`.
+/// `expr` without `.await`, parentheses and the error adaptors that [`is_error_adaptor`] matches,
+/// such as `.map(..)` and `.context(..)`.
 fn peel_error_adaptors(mut expr: &syn::Expr) -> &syn::Expr {
     loop {
         expr = match peel_await_and_parens(expr) {
@@ -3631,6 +3642,27 @@ mod tests {
         assert_eq!(
             obligations_of(&source_text),
             ["direct Error::A", "direct anyhow::Error", "forward load"]
+        );
+    }
+
+    #[test]
+    fn in_place_closure_returns_convert_at_the_call_site() {
+        let source_text = concat!(
+            "enum Outer { Inner(Inner) }\n",
+            "impl From<Inner> for Outer {\n",
+            "    fn from(inner: Inner) -> Self { Self::Inner(inner) }\n",
+            "}\n",
+            "fn subject() -> Result<(), Outer> {\n",
+            "    std::thread::scope(|_| -> Result<(), Inner> {\n",
+            "        if x { return Err(Inner::A); }\n",
+            "        Ok(())\n",
+            "    })?;\n",
+            "    Ok(())\n",
+            "}\n",
+        );
+        assert_eq!(
+            obligations_of(source_text),
+            ["direct Outer::Inner|Inner::A"]
         );
     }
 

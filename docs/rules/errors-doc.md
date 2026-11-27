@@ -768,7 +768,9 @@ is documented by a Forwards bullet for `start`.
 
 A closure that runs in place is part of the fn when the call's value leaves the fn, in a return
 position. Its value is the call's value, so its `?` sites, `return`s, anyhow macros and value are
-checked as the fn's own. Two kinds of closures run in place:
+checked as the fn's own. Its value and `return` values leave the fn where the call does, so a `?`
+after the call converts them with `From`, as it converts the call's value. Two kinds of closures run
+in place:
 
 * The only argument of a fn whose last segment is `scope` or `block_in_place`, such as
   `std::thread::scope(|scope| ..)` and `tokio::task::block_in_place(|| ..)`.
