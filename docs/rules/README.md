@@ -49,7 +49,9 @@ kind of rule it is:
 | `LNT` | Nothing: it holds the linter's own diagnostics, the [meta codes](#meta-codes). |
 
 * Codes are numbered from `001` in each set, in the order the rules were added. A number may be
-  reserved for a rule in progress: `DOC005` is.
+  reserved for a rule in progress: `DOC005` is reserved for `returns-doc`, the rule of
+  [y-scope/yscope-linter#7](https://github.com/y-scope/yscope-linter/issues/7), whose parked
+  implementation claimed it.
 * A code is never renumbered, and never reused by another rule, even after its rule is
   [deprecated](#deprecation-policy).
 * A new rule takes the next free number in its set, after the reserved ones. So the next `DOC` rule

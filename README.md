@@ -28,8 +28,10 @@ packages of a cargo workspace, or only the lines a pull request changes.
 
 Each rule has a stable code: a set prefix, `DOC` for comments and docstrings or `ORG` for code
 organization, and a number. A code is never renumbered or reused, and a removed rule is deprecated
-instead. See the [rule index](docs/rules/README.md) for the naming standard and the deprecation
-policy.
+instead. `DOC005` is reserved for `returns-doc`, the rule of
+[y-scope/yscope-linter#7](https://github.com/y-scope/yscope-linter/issues/7), whose parked
+implementation claimed it. See the [rule index](docs/rules/README.md) for the naming standard and
+the deprecation policy.
 
 A rule can be silenced for a line, a comment block, an item, a region or a file with a suppression
 comment that gives a reason. See [Suppression comments](docs/suppression.md).

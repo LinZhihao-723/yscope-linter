@@ -447,9 +447,10 @@ rule that is deprecated.
    maintainers.
 2. Take the next free number in the set: one more than the highest code in it, deprecated rules and
    reserved numbers included. Never reuse a number. A number may be reserved for a rule in progress,
-   as `DOC005` is for [y-scope/yscope-linter#7](https://github.com/y-scope/yscope-linter/issues/7):
-   add it to `reserved_codes` in the gap test of `src/diagnostic.rs`, and remove it there when the
-   rule lands.
+   as `DOC005` is for `returns-doc`, the rule of
+   [y-scope/yscope-linter#7](https://github.com/y-scope/yscope-linter/issues/7), whose parked
+   implementation claimed it: add it to `reserved_codes` in the gap test of `src/diagnostic.rs`, and
+   remove it there when the rule lands.
 3. Add a `RuleId` variant, add it to `RuleId::ALL`, and give it its name in `RuleId::name`, its code
    in `RuleId::code`, and `false` in `RuleId::is_deprecated`. `--rule`, suppression parsing, set
    selectors and the unknown-rule message pick it up from there.
@@ -1874,7 +1875,8 @@ The section is grouped with `DocSection::content`. Then:
 * The element list is the top-level bullets whose `num_prose_before` is 1 if the section starts with
   prose, and 0 if it starts with a bullet: the list right after the first paragraph, or the list the
   section starts with. A list after a later paragraph, such as one under a `## Errors` subsection,
-  is never counted, and sub-bullets never are.
+  is never counted, and sub-bullets never are. `num_prose_before` counts prose paragraphs only, so
+  a non-prose block between the intro and the list, such as a fenced code block, is ignored.
 * The count is checked when the intro is right or the element list isn't empty. So a wrong prose
   intro with no list gets only the intro message, and a section that starts with a wrong number of
   bullets gets both messages at its first bullet.
@@ -1884,8 +1886,10 @@ The section is grouped with `DocSection::content`. Then:
   section has bullets after a later paragraph. Then the message says that no list follows the intro,
   and asks to move the bullets up.
 
-Messages, with `f` the fn's bare name, as in `errors-doc`, and `S` the subject `` `f` returns a
-N-element tuple `` or `` `f` returns a `Result` of a N-element tuple ``:
+Messages, with `f` the fn's bare name, as in `errors-doc`, `M` the number of bullets in the
+element list, and `S` the subject `` `f` returns a tuple of N elements `` or `` `f` returns a
+`Result` of a tuple of N elements ``. The subject names the count after the noun, so its article
+doesn't depend on the number:
 
 * `` `f` returns a tuple; start `# Returns` with "A tuple containing:" ``
 * `` `f` returns a `Result` of a tuple; start `# Returns` with "A tuple on success, containing:" ``
@@ -2183,8 +2187,13 @@ What `tuple-returns-doc` checks:
   last segment ends with `Result` is taken as a `Result` with its `Ok` type first.
 * Only the number of top-level bullets is checked, not their wording or their order.
 * An element list indented deeper than a later bullet of the section is grouped as prose, since the
-  top-level indent is the section's smallest bullet indent. The fn then gets an intro or a count
-  finding it doesn't deserve.
+  top-level indent is the section's smallest bullet indent. The fn then gets a "no list follows the
+  `# Returns` intro" finding, or only the intro finding if the intro is also wrong.
+* A continuation line indented less than its bullet's content indent, such as a lazy continuation
+  at the bullet's indent or a line indented two spaces under `1. `, starts a prose paragraph in
+  `DocSection::content`, although CommonMark continues the bullet. That raises `num_prose_before`
+  for the later bullets, so they aren't counted and the fn may get a count finding it doesn't
+  deserve. The grouping is shared with `errors-doc`, so it isn't changed for this rule.
 
 Input:
 
@@ -2251,12 +2260,11 @@ Cargo mode:
 * Checking more `impl Future` shapes. `Output` is often an alias that doesn't end in `Result`, so
   the gain is small.
 * Checking `Option<(A, B)>` in `tuple-returns-doc`, with `A tuple containing:` for the `Some` case.
-  It was decided against on
-  [y-scope/yscope-linter#17](https://github.com/y-scope/yscope-linter/issues/17): the convention
-  covers tuples and `Result`s of tuples only, and other wrappers stay unchecked.
+  The rule's convention covers tuples and `Result`s of tuples only, and other wrappers stay
+  unchecked.
 * Requiring nested bullets for a nested tuple element, such as `(A, (B, C))`, in
-  `tuple-returns-doc`. One top-level bullet per outer element is required, and nested bullets for
-  the inner elements are allowed but not required, as decided on the same issue.
+  `tuple-returns-doc`. The rule requires one top-level bullet per outer element, and allows nested
+  bullets for the inner elements without requiring them.
 * A `--targets-from` input beside `--diff`. `--diff` covers CI, including pure deletions, and
   `FILE:RANGES` targets cover ad hoc use.
 * Positional targets in cargo mode, intersected with the packages' files. The path mode already
