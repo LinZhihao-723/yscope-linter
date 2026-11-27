@@ -1148,21 +1148,25 @@ fn. Nested items aren't entered at all (`visit_item` doesn't recurse).
 A closure that a call runs in place (see [Values that leave the fn](#values-that-leave-the-fn)) is
 the exception. When `classify_fallible` classifies the call in a return position,
 `classify_in_place_closure` visits the closure's body a second time, at the call's depth, so its
-`?`, `return` and anyhow-macro sites are the fn's. While it visits, `in_place_return_site` holds the
-call's site, which `return_site` gives in place of `Tail`. So `visit_expr_return` classifies the
-closure's `return` values there, as the closure's value is, and so does match-forwarding for the
-`Err(binding)` arms it handles. A `?` after the call converts them, as it converts the errors that
-`wrap_binding` records. `with_nested_scope` clears it, so a `return` in a nested closure stays that
-closure's. The walk's own visit of the closure still counts it as a nested scope, so the closure's
-callees are nested callees too, and a closure in any other position stays nested. Visiting a body
-twice records nothing twice that matters: the comparison dedups obligations by `ObligationKey`, the
-facts other than `obligations` are sets, `forwarded_sites` is checked before an anyhow macro is
-recorded, and the bindings are recomputed. They come out the same unless the closure shadows a
-binding it used earlier: a tail closure is visited a second time after the walk has seen its `let`s,
-so the earlier use resolves to the shadowing binding (see [Known limits](#known-limits)). An
-in-place closure at the tail of another one in a return position is visited twice per visit of the
-outer one, so the visits grow exponentially with the nesting depth of in-place closures in return
-positions. Real code nests one or two.
+`?`, `return` and anyhow-macro sites are the fn's. While it visits and classifies the body,
+`in_place_return_site` holds the call's site, which `return_site` gives in place of `Tail`. So
+`visit_expr_return` classifies the closure's `return` values there, as the closure's value is, and
+so does match-forwarding for the `Err(binding)` arms it handles, including an arm that passes the
+error through a helper (`Err(e) => Err(classify(e))`). A `?` after the call converts them, as it
+converts the errors that `wrap_binding` records. `with_nested_scope` clears it, so a `return` in a
+nested closure stays that closure's. The closure's identifier parameters hide the outer bindings of
+their names meanwhile, so `r?` on a parameter `r` isn't taken as a forward of an earlier
+`let r = load()`, and the bindings come back afterwards. The walk's own visit of the closure still
+counts it as a nested scope, so the closure's callees are nested callees too, and a closure in any
+other position stays nested. Visiting a body twice records nothing twice that matters: the
+comparison dedups obligations by `ObligationKey`, the facts other than `obligations` are sets,
+`forwarded_sites` is checked before an anyhow macro is recorded, and the bindings are recomputed.
+They come out the same unless the closure shadows a binding it used earlier: a tail closure is
+visited a second time after the walk has seen its `let`s, so the earlier use resolves to the
+shadowing binding (see [Known limits](#known-limits)). An in-place closure at the tail of another
+one in a return position is visited twice per visit of the outer one, so the visits grow
+exponentially with the nesting depth of in-place closures in return positions. Real code nests one
+or two.
 
 `BodyFacts` holds:
 
@@ -2198,8 +2202,9 @@ Errors the scan can't attribute:
   required. Saving and restoring the binding maps around closures and blocks would fix it.
 * The async exclusion of in-place closures is syntactic. A closure whose value is a future without
   a literal `async` block, such as `(|| Box::pin(async { .. }))().await?` or
-  `(|| async { .. }.boxed())().await?`, runs in place, and its value forwards the wrapper
-  (`Box::pin`, `boxed`), as the same future written without the closure does.
+  `(|| async { .. }.boxed())().await?`, runs in place, and its value is classified as the future
+  itself: `Box::pin(async { load().await })` forwards `load` (or `Box::pin`), and
+  `async { .. }.boxed()` forwards `boxed`.
 * `IN_PLACE_FNS` is matched by last segment, so any fn named `scope` or `block_in_place` whose only
   argument is a closure runs it in place, `crossbeam::scope` included, whose `Err` is a panic
   payload. Method forms (`pool.scope(..)`, `span.in_scope(..)`) aren't recognized.
