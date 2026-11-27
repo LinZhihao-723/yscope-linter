@@ -989,12 +989,10 @@ mod tests {
         let body = "    serialize(x).map_err(InternalError::TaskOutputs)?;\n    Ok(())";
         assert_eq!(
             checked(&subject(&[], body)),
-            [
-                "8:53: `subject` maps errors from `serialize` into \
+            ["8:53: `subject` maps errors from `serialize` into \
                  [`InternalError::TaskOutputs`], but `# Errors` documents neither; add \"* \
                  Forwards [`serialize`]'s return values on failure.\" or \"* \
-                 [`InternalError::TaskOutputs`] if ...\""
-            ]
+                 [`InternalError::TaskOutputs`] if ...\""]
         );
         for bullet in [
             "Forwards [`serialize`]'s return values on failure.",
@@ -1632,15 +1630,15 @@ mod tests {
             ]
         );
         assert_eq!(
-            checked(&in_file(
-                &["[`Error::Transport`] if the channel is closed."]
-            )),
+            checked(&in_file(&[
+                "[`Error::Transport`] if the channel is closed."
+            ])),
             Vec::<String>::new()
         );
         assert_eq!(
-            checked(&in_file(
-                &["[`Status::Internal`] if the channel is closed."]
-            )),
+            checked(&in_file(&[
+                "[`Status::Internal`] if the channel is closed."
+            ])),
             [
                 "13:16: `subject` returns the [`Error`] that `transport_error` builds, but `# \
                  Errors` has no bullet for it; add a bullet for the variant `transport_error` \
@@ -1738,5 +1736,73 @@ mod tests {
                  never forwards"
             ]
         );
+    }
+
+    #[test]
+    fn issue_13_reproductions_are_clean() {
+        let closure_binding = concat!(
+            "use anyhow::Context;\n",
+            "\n",
+            "/// Creates the directories.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * Forwards [`std::fs::create_dir_all`]'s return values on failure.\n",
+            "fn create(a: &std::path::Path, b: &std::path::Path) -> anyhow::Result<()> {\n",
+            "    let create_directory = |directory: &std::path::Path| {\n",
+            "        std::fs::create_dir_all(directory).context(\"failed to create the directory\")\n",
+            "    };\n",
+            "    create_directory(a)?;\n",
+            "    create_directory(b)\n",
+            "}\n",
+        );
+        assert_eq!(checked(closure_binding), Vec::<String>::new());
+        let thread_scope = concat!(
+            "use anyhow::Context;\n",
+            "\n",
+            "/// Runs the command in a thread scope.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * Forwards [`std::process::Command::spawn`]'s return values on failure.\n",
+            "fn run(command: &mut std::process::Command) -> anyhow::Result<()> {\n",
+            "    std::thread::scope(|_scope| {\n",
+            "        let child = command.spawn().context(\"failed to spawn\")?;\n",
+            "        drop(child);\n",
+            "        let result: anyhow::Result<()> = Ok(());\n",
+            "        result.context(\"failed to run\")\n",
+            "    })\n",
+            "}\n",
+        );
+        assert_eq!(checked(thread_scope), Vec::<String>::new());
+    }
+
+    #[test]
+    fn in_place_closure_question_marks_need_bullets() {
+        let source_text = subject(
+            &["Forwards [`store`]'s return values on failure."],
+            "    std::thread::scope(|_scope| {\n        load()?;\n        store()\n    })",
+        );
+        assert_eq!(
+            checked(&source_text),
+            [
+                "10:15: `subject` forwards errors from `load`, but `# Errors` does not list it; \
+                 add \"* Forwards [`load`]'s return values on failure.\""
+            ]
+        );
+    }
+
+    #[test]
+    fn spawned_closure_question_marks_stay_nested() {
+        let source_text = subject(
+            &["Forwards [`load`]'s return values on failure."],
+            "    let handle = std::thread::spawn(move || { store()?; Ok::<(), Error>(()) });\n    \
+             drop(handle);\n    load()",
+        );
+        assert_eq!(checked(&source_text), Vec::<String>::new());
     }
 }
