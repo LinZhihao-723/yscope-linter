@@ -14,7 +14,7 @@ use crate::syntax::test_code;
 /// * `'ast` - The lifetime of the syntax tree the item is in.
 pub struct DocItem<'ast> {
     pub kind: DocItemKind<'ast>,
-    name: String,
+    pub name: String,
 
     /// The item's outer attributes, including its doc comments.
     pub attrs: &'ast [syn::Attribute],
@@ -76,7 +76,24 @@ pub enum DocItemKind<'ast> {
     TypeAlias(&'ast syn::Generics),
 }
 
-impl DocItemKind<'_> {
+impl<'ast> DocItemKind<'ast> {
+    /// # Returns
+    ///
+    /// The item's signature if it is a fn of any kind, or [`None`] otherwise.
+    pub const fn signature(self) -> Option<&'ast syn::Signature> {
+        match self {
+            Self::FreeFn(sig)
+            | Self::InherentMethod(sig)
+            | Self::TraitImplMethod(sig)
+            | Self::TraitMethod(sig) => Some(sig),
+            Self::Struct(_)
+            | Self::Enum(_)
+            | Self::Union(_)
+            | Self::Trait(_)
+            | Self::TypeAlias(_) => None,
+        }
+    }
+
     /// # Returns
     ///
     /// The noun that diagnostics name an item of this kind with, such as `fn` or `trait method`.

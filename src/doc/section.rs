@@ -78,6 +78,9 @@ pub struct Bullet {
     /// between them.
     pub follows_prose: bool,
 
+    /// The number of prose paragraphs of the section before the bullet.
+    pub num_prose_before: usize,
+
     pub sub_bullets: Vec<SubBullet>,
 }
 
@@ -202,6 +205,7 @@ impl ContentBuilder<'_> {
                 });
             }
             if let Some(bullet) = markdown::bullet_marker(text) {
+                let num_prose_before = self.content.prose.len();
                 let bullets = &mut self.content.bullets;
                 match (top_indent, last_bullet) {
                     (Some(top_indent), _) if bullet.indent <= top_indent => {
@@ -210,6 +214,7 @@ impl ContentBuilder<'_> {
                             position: doc_line.position,
                             content_indent: bullet.content_indent,
                             follows_prose,
+                            num_prose_before,
                             sub_bullets: Vec::new(),
                         });
                         follows_prose = false;
@@ -408,7 +413,7 @@ mod tests {
              Fenced.\n```\n\n[`x`]: crate::x";
         let content = content_of(text, "Parameters");
         assert_eq!(content.prose, ["The inputs:", "Trailing prose."]);
-        let bullets: Vec<(&str, usize, usize, bool)> = content
+        let bullets: Vec<(&str, usize, usize, bool, usize)> = content
             .bullets
             .iter()
             .map(|bullet| {
@@ -417,14 +422,15 @@ mod tests {
                     bullet.position.line,
                     bullet.content_indent,
                     bullet.follows_prose,
+                    bullet.num_prose_before,
                 )
             })
             .collect();
         assert_eq!(
             bullets,
             [
-                ("`a` - The first input.", 5, 2, true),
-                ("`b` - The second.", 9, 2, false)
+                ("`a` - The first input.", 5, 2, true, 1),
+                ("`b` - The second.", 9, 2, false, 1)
             ]
         );
         let sub_bullets: Vec<(&str, usize)> = content.bullets[0]
@@ -448,7 +454,7 @@ mod tests {
                     deeper bullet.\n* `b` - The second.";
         let content = content_of(text, "Parameters");
         assert_eq!(content.prose, ["Prose.", "* A deeper bullet."]);
-        let bullets: Vec<(&str, usize, bool)> = content
+        let bullets: Vec<(&str, usize, bool, usize)> = content
             .bullets
             .iter()
             .map(|bullet| {
@@ -456,14 +462,15 @@ mod tests {
                     bullet.text.as_str(),
                     bullet.sub_bullets.len(),
                     bullet.follows_prose,
+                    bullet.num_prose_before,
                 )
             })
             .collect();
         assert_eq!(
             bullets,
             [
-                ("`a` - The first.", 0, false),
-                ("`b` - The second.", 0, true)
+                ("`a` - The first.", 0, false, 0),
+                ("`b` - The second.", 0, true, 2)
             ]
         );
     }
