@@ -663,8 +663,10 @@ mod tests {
 
     /// # Returns
     ///
-    /// The block that `line` opens where no paragraph precedes it, and right after a paragraph line
-    /// of the same container.
+    /// A tuple containing:
+    ///
+    /// * The block that `line` opens where no paragraph precedes it.
+    /// * The block that `line` opens right after a paragraph line of the same container.
     fn both_contexts(line: &str) -> (Option<BlockStart>, Option<BlockStart>) {
         (
             BlockStart::parse(line, Preceding::NoParagraph),

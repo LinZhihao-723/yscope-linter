@@ -283,7 +283,10 @@ mod tests {
 
     /// # Returns
     ///
-    /// The indices of the facts and documented paths that `scope` pairs, sorted.
+    /// A tuple containing:
+    ///
+    /// * The indices of the facts that `scope` pairs, sorted.
+    /// * The indices of the documented paths that `scope` pairs, sorted.
     fn paired(
         facts: &[&str],
         documented: &[&str],

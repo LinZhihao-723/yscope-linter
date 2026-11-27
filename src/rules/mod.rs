@@ -5,6 +5,7 @@ mod greedy_wrap;
 mod registry;
 mod symbol_order;
 mod trait_params_doc;
+mod tuple_returns_doc;
 mod type_params_doc;
 
 pub use registry::Code;

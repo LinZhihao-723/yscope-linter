@@ -163,7 +163,10 @@ pub fn has_try_operator(tokens: &TokenStream) -> bool {
 ///
 /// # Returns
 ///
-/// The future expressions and guards, in order, and the arm bodies, in order.
+/// A tuple on success, containing:
+///
+/// * The future expressions and guards, in order.
+/// * The arm bodies, in order.
 ///
 /// # Errors
 ///

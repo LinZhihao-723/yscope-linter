@@ -219,6 +219,14 @@ mod tests {
                 RuleId::TypeParamsDoc
             ]
         );
+        for rule in ["tuple-returns-doc", "DOC006"] {
+            let settings = parsed(&format!(r#"{{"rules": ["{rule}"]}}"#)).expect("valid rules");
+            assert_eq!(
+                enabled_rules(&settings),
+                [RuleId::TupleReturnsDoc],
+                "{rule}"
+            );
+        }
     }
 
     #[test]

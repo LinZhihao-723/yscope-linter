@@ -214,8 +214,8 @@ fn undecidable_test_module_is_one_parse_error_that_names_the_asking_rules() {
     assert_eq!(
         stdout_lines(&run(&directory, &["--skip-tests", "dir/child.rs"], "")),
         [format!(
-            "{problem} errors-doc, symbol-order, trait-params-doc, type-params-doc check it as \
-             non-test code"
+            "{problem} errors-doc, symbol-order, trait-params-doc, tuple-returns-doc, \
+             type-params-doc check it as non-test code"
         )]
     );
     assert_eq!(
@@ -408,7 +408,7 @@ fn github_format_renders_workflow_commands() {
             "::error file=a.rs,line=1,col=1,title=LNT002 invalid-suppression::unknown rule \
              `nope`; expected a rule name or code, one of comment-greedy-wrap (DOC001), \
              errors-doc (DOC002), symbol-order (ORG001), trait-params-doc (DOC004), \
-             type-params-doc (DOC003), or a set, one of DOC, ORG"
+             tuple-returns-doc (DOC006), type-params-doc (DOC003), or a set, one of DOC, ORG"
         ]
     );
 }
@@ -499,6 +499,63 @@ fn param_doc_rules_honor_rule_selection_and_suppressions() {
             ""
         )),
         [trait_params_finding]
+    );
+}
+
+#[test]
+fn tuple_returns_doc_honors_rule_selection_and_suppressions() {
+    let directory = test_directory("tuple_returns_doc_honors_rule_selection_and_suppressions");
+    write_file(
+        &directory,
+        "a.rs",
+        concat!(
+            "/// Splits.\n",
+            "///\n",
+            "/// # Returns\n",
+            "///\n",
+            "/// The parts.\n",
+            "fn split() -> (u8, u8) {\n",
+            "    (0, 0)\n",
+            "}\n",
+            "\n",
+            "// yscope-linter: allow(DOC006): reason\n",
+            "/// Joins.\n",
+            "///\n",
+            "/// # Returns\n",
+            "///\n",
+            "/// The parts.\n",
+            "fn join() -> (u8, u8) {\n",
+            "    (0, 0)\n",
+            "}\n",
+            "\n",
+            "// yscope-linter: allow-item(tuple-returns-doc): reason\n",
+            "/// Pairs.\n",
+            "///\n",
+            "/// # Returns\n",
+            "///\n",
+            "/// The parts.\n",
+            "fn pair() -> (u8, u8) {\n",
+            "    (0, 0)\n",
+            "}\n",
+        ),
+    );
+    let finding = "a.rs:5:1: DOC006 tuple-returns-doc: `split` returns a tuple; start `# Returns` \
+                   with \"A tuple containing:\"";
+    for args in [
+        &["a.rs"][..],
+        &["--rule", "tuple-returns-doc", "a.rs"],
+        &["--rule", "DOC006", "a.rs"],
+        &["--rule", "DOC", "a.rs"],
+    ] {
+        assert_eq!(
+            stdout_lines(&run(&directory, args, "")),
+            [finding],
+            "{args:?}"
+        );
+    }
+    assert_eq!(
+        stdout_lines(&run(&directory, &["--rule", "DOC003", "a.rs"], "")),
+        Vec::<String>::new()
     );
 }
 

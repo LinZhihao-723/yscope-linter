@@ -368,6 +368,7 @@ mod tests {
                 ("DOC002".to_owned(), "errors-doc"),
                 ("DOC003".to_owned(), "type-params-doc"),
                 ("DOC004".to_owned(), "trait-params-doc"),
+                ("DOC006".to_owned(), "tuple-returns-doc"),
                 ("LNT001".to_owned(), "parse-error"),
                 ("LNT002".to_owned(), "invalid-suppression"),
                 ("LNT003".to_owned(), "unused-suppression"),
@@ -377,7 +378,9 @@ mod tests {
     }
 
     #[test]
-    fn codes_are_well_formed_and_numbered_without_gaps_in_each_set() {
+    fn codes_are_well_formed_and_numbered_without_gaps_but_reserved_ones_in_each_set() {
+        // DOC005 is reserved for the rule of y-scope/yscope-linter#7, which is in progress.
+        let reserved_codes = [Code::new(CodeSet::Doc, 5)];
         for kind in every_kind() {
             let text = kind.code().to_string();
             let (prefix, digits) = text.split_at(3);
@@ -400,6 +403,7 @@ mod tests {
             let mut numbers: Vec<_> = every_kind()
                 .into_iter()
                 .map(DiagnosticKind::code)
+                .chain(reserved_codes)
                 .filter(|code| code.set == set)
                 .map(|code| code.number)
                 .collect();

@@ -992,7 +992,12 @@ mod tests {
                 RuleId::CommentGreedyWrap,
                 RuleId::ErrorsDoc,
                 RuleId::TraitParamsDoc,
+                RuleId::TupleReturnsDoc,
             ])
+        );
+        assert_eq!(
+            rule_ids(" yscope-linter: allow(DOC006, tuple-returns-doc): why"),
+            Ok(vec![RuleId::TupleReturnsDoc])
         );
     }
 

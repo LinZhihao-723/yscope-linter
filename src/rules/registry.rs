@@ -12,6 +12,7 @@ use crate::rules::errors_doc;
 use crate::rules::greedy_wrap;
 use crate::rules::symbol_order;
 use crate::rules::trait_params_doc;
+use crate::rules::tuple_returns_doc;
 use crate::rules::type_params_doc;
 
 /// A lint rule that `--rule` can select and a suppression can name.
@@ -21,15 +22,17 @@ pub enum RuleId {
     ErrorsDoc,
     SymbolOrder,
     TraitParamsDoc,
+    TupleReturnsDoc,
     TypeParamsDoc,
 }
 
 impl RuleId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::CommentGreedyWrap,
         Self::ErrorsDoc,
         Self::SymbolOrder,
         Self::TraitParamsDoc,
+        Self::TupleReturnsDoc,
         Self::TypeParamsDoc,
     ];
 
@@ -42,6 +45,7 @@ impl RuleId {
             Self::ErrorsDoc => "errors-doc",
             Self::SymbolOrder => "symbol-order",
             Self::TraitParamsDoc => "trait-params-doc",
+            Self::TupleReturnsDoc => "tuple-returns-doc",
             Self::TypeParamsDoc => "type-params-doc",
         }
     }
@@ -55,6 +59,7 @@ impl RuleId {
             Self::ErrorsDoc => Code::new(CodeSet::Doc, 2),
             Self::TypeParamsDoc => Code::new(CodeSet::Doc, 3),
             Self::TraitParamsDoc => Code::new(CodeSet::Doc, 4),
+            Self::TupleReturnsDoc => Code::new(CodeSet::Doc, 6),
             Self::SymbolOrder => Code::new(CodeSet::Org, 1),
         }
     }
@@ -71,6 +76,7 @@ impl RuleId {
             | Self::ErrorsDoc
             | Self::SymbolOrder
             | Self::TraitParamsDoc
+            | Self::TupleReturnsDoc
             | Self::TypeParamsDoc => false,
         }
     }
@@ -264,6 +270,7 @@ pub enum Rule {
     ErrorsDoc(errors_doc::Checker),
     SymbolOrder(symbol_order::Checker),
     TraitParamsDoc(trait_params_doc::Checker),
+    TupleReturnsDoc(tuple_returns_doc::Checker),
     TypeParamsDoc(type_params_doc::Checker),
 }
 
@@ -285,6 +292,9 @@ impl Rule {
             RuleId::TraitParamsDoc => {
                 Self::TraitParamsDoc(trait_params_doc::Checker::new(check_config.skip_tests))
             }
+            RuleId::TupleReturnsDoc => {
+                Self::TupleReturnsDoc(tuple_returns_doc::Checker::new(check_config.skip_tests))
+            }
             RuleId::TypeParamsDoc => {
                 Self::TypeParamsDoc(type_params_doc::Checker::new(check_config.skip_tests))
             }
@@ -302,6 +312,7 @@ impl Rule {
             Self::ErrorsDoc(checker) => checker.check(context),
             Self::SymbolOrder(checker) => checker.check(context),
             Self::TraitParamsDoc(checker) => checker.check(context),
+            Self::TupleReturnsDoc(checker) => checker.check(context),
             Self::TypeParamsDoc(checker) => checker.check(context),
         }
     }
@@ -335,6 +346,7 @@ mod tests {
                 RuleId::CommentGreedyWrap,
                 RuleId::ErrorsDoc,
                 RuleId::TraitParamsDoc,
+                RuleId::TupleReturnsDoc,
                 RuleId::TypeParamsDoc,
             ])
         );
@@ -397,7 +409,7 @@ mod tests {
             unknown("lnt001"),
             "unknown rule `lnt001`; expected a rule name or code, one of comment-greedy-wrap \
              (DOC001), errors-doc (DOC002), symbol-order (ORG001), trait-params-doc (DOC004), \
-             type-params-doc (DOC003), or a set, one of DOC, ORG"
+             tuple-returns-doc (DOC006), type-params-doc (DOC003), or a set, one of DOC, ORG"
         );
     }
 }
