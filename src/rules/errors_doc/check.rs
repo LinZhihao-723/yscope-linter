@@ -1827,4 +1827,45 @@ mod tests {
         );
         assert_eq!(checked(source_text), Vec::<String>::new());
     }
+
+    #[test]
+    fn wraps_in_in_place_closures_convert_at_the_call_site() {
+        let source_text = concat!(
+            "enum Outer { Inner(Inner) }\n",
+            "impl From<Inner> for Outer {\n",
+            "    fn from(inner: Inner) -> Self { Self::Inner(inner) }\n",
+            "}\n",
+            "/// Checks.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * [`Outer::Inner`] if loading fails.\n",
+            "fn wrapped_match() -> Result<(), Outer> {\n",
+            "    std::thread::scope(|_| -> Result<(), Inner> {\n",
+            "        match load() {\n",
+            "            Ok(()) => Ok(()),\n",
+            "            Err(error) => Err(Inner::Wrap(error)),\n",
+            "        }\n",
+            "    })?;\n",
+            "    Ok(())\n",
+            "}\n",
+            "/// Checks.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * [`Outer::Inner`] if loading fails.\n",
+            "fn wrapped_if_let() -> Result<(), Outer> {\n",
+            "    (|| -> Result<(), Inner> {\n",
+            "        if let Err(error) = load() { return Err(Inner::Wrap(error)); }\n",
+            "        Ok(())\n",
+            "    })()?;\n",
+            "    Ok(())\n",
+            "}\n",
+        );
+        assert_eq!(checked(source_text), Vec::<String>::new());
+    }
 }

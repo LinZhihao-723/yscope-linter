@@ -1710,7 +1710,7 @@ impl<'ast> BodyScanner<'_, 'ast> {
                 .and_then(|ident| self.err_binding_callees.get(&ident.to_string()))
                 .cloned();
             match callee {
-                Some(callee) => self.record_forward(callee, Site::Tail),
+                Some(callee) => self.record_forward(callee, self.return_site()),
                 None => self.record_opaque_source(),
             }
         }
@@ -1845,7 +1845,7 @@ impl<'ast> BodyScanner<'_, 'ast> {
                     &pat_ident.ident.to_string(),
                 )
             {
-                self.classify_fallible(&expr_match.expr, Site::Tail);
+                self.classify_fallible(&expr_match.expr, self.return_site());
             }
             if let Some(binding) = err_binding(&arm.pat) {
                 self.forward_binding(&expr_match.expr, &binding, |binding| {
@@ -1895,7 +1895,7 @@ impl<'ast> BodyScanner<'_, 'ast> {
     ) {
         if let Some(sites) = forwarded_sites(binding) {
             self.forwarded_sites.extend(sites);
-            self.classify_fallible(scrutinee, Site::Tail);
+            self.classify_fallible(scrutinee, self.return_site());
         }
     }
 
@@ -1913,10 +1913,21 @@ impl<'ast> BodyScanner<'_, 'ast> {
         self.record(
             ObligationKind::Either {
                 callee: callee.spellings,
-                errors: self.convert(errors, is_conversion(wrapping)),
+                errors: self.convert(
+                    errors,
+                    is_conversion(wrapping) || self.return_site().is_try(),
+                ),
             },
             position,
         );
+    }
+
+    /// # Returns
+    ///
+    /// The site where a `return` value leaves the fn: the site of the in-place closure being
+    /// visited, if any, or else [`Site::Tail`].
+    fn return_site(&self) -> Site {
+        self.in_place_return_site.unwrap_or(Site::Tail)
     }
 
     /// Runs `visit` inside a nested scope, where `?` and `return` don't leave the fn.
@@ -2035,8 +2046,7 @@ impl<'node> Visit<'node> for BodyScanner<'_, '_> {
 
     fn visit_expr_return(&mut self, expr_return: &'node syn::ExprReturn) {
         if let Some(returned) = &expr_return.expr {
-            let site = self.in_place_return_site.unwrap_or(Site::Tail);
-            self.classify_fallible(returned, site);
+            self.classify_fallible(returned, self.return_site());
         }
         syn::visit::visit_expr_return(self, expr_return);
     }
@@ -2333,12 +2343,19 @@ fn is_error_adaptor(method: &str) -> bool {
 
 /// # Returns
 ///
-/// Whether `expr` is an awaited `spawn(..)` or `spawn_blocking(..)` call or method call.
+/// Whether `expr` is an awaited `spawn(..)` or `spawn_blocking(..)` call or method call, directly
+/// or as the value of a closure that runs in place, such as `(|| tokio::spawn(..))().await`.
 fn is_awaited_spawn(expr: &syn::Expr) -> bool {
-    match peel_parens(expr) {
-        syn::Expr::Await(expr_await) => is_spawn_call(&expr_await.base),
-        _ => false,
+    let syn::Expr::Await(expr_await) = peel_parens(expr) else {
+        return false;
+    };
+    let mut awaited = &*expr_await.base;
+    while let syn::Expr::Call(call) = peel_parens(awaited)
+        && let Some(closure) = in_place_closure(call)
+    {
+        awaited = peel_block_tail(&closure.body);
     }
+    is_spawn_call(awaited)
 }
 
 /// # Returns
@@ -3015,6 +3032,7 @@ mod tests {
     fn spawned_handles_and_converted_variables_are_opaque_errors() {
         for body in [
             "let x = tokio::task::spawn_blocking(f).await??;\nOk(())",
+            "(|| tokio::spawn(load()))().await??;\nOk(())",
             "Err(error.into())",
             "Err(Error::from(error))",
         ] {
@@ -3664,6 +3682,57 @@ mod tests {
             obligations_of(source_text),
             ["direct Outer::Inner|Inner::A"]
         );
+    }
+
+    #[test]
+    fn in_place_closure_match_arms_convert_at_the_call_site() {
+        let conversion = concat!(
+            "enum Outer { Inner(Inner) }\n",
+            "impl From<Inner> for Outer {\n",
+            "    fn from(inner: Inner) -> Self { Self::Inner(inner) }\n",
+            "}\n",
+        );
+        for (body, expected) in [
+            (
+                concat!(
+                    "    std::thread::scope(|_| -> Result<(), Inner> {\n",
+                    "        match load() {\n",
+                    "            Ok(()) => Ok(()),\n",
+                    "            Err(error) => Err(Inner::Wrap(error)),\n",
+                    "        }\n",
+                    "    })?;\n",
+                ),
+                "either load Outer::Inner|Inner::Wrap",
+            ),
+            (
+                concat!(
+                    "    (|| -> Result<(), Inner> {\n",
+                    "        if let Err(error) = load() { return Err(Inner::Wrap(error)); }\n",
+                    "        Ok(())\n",
+                    "    })()?;\n",
+                ),
+                "either load Outer::Inner|Inner::Wrap",
+            ),
+            (
+                concat!(
+                    "    std::thread::scope(|_| -> Result<(), Inner> {\n",
+                    "        match retry(|| Err(Inner::A)) {\n",
+                    "            Ok(()) => Ok(()),\n",
+                    "            Err(error) => Err(error),\n",
+                    "        }\n",
+                    "    })?;\n",
+                ),
+                "higher-order retry Outer::Inner|Inner::A",
+            ),
+        ] {
+            let source_text =
+                format!("{conversion}fn subject() -> Result<(), Outer> {{\n{body}    Ok(())\n}}\n");
+            assert_eq!(
+                obligations_of(&source_text),
+                [expected],
+                "obligations of `{body}`"
+            );
+        }
     }
 
     #[test]
