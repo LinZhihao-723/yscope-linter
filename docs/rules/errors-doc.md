@@ -828,6 +828,48 @@ example.rs:19:11: DOC002 errors-doc: `insert_row` forwards errors from `insert`,
 
 A call of the fn itself forwards nothing, so it needs no bullet. A Forwards bullet for it is stale.
 
+In a trait impl method, a call of the method's own name through `Self::`, the impl's type or `self.`
+calls the type's inherent fn of that name if the type has one, since Rust looks up inherent fns
+before trait methods. Delegating a trait method to an inherent fn of the same name is common:
+
+* If the file has an inherent impl of the type with a fn of that name, the call forwards that fn and
+  needs a Forwards bullet.
+* Otherwise the inherent fn may be in another file, so the bullet is optional: a bullet for it isn't
+  stale, and a missing bullet isn't reported.
+
+A call through the trait's name, such as `Submitter::submit(self)` or
+`<Self as Submitter>::submit(self)`, is always recursion.
+
+```rust
+impl Client {
+    fn submit(&self) -> Result<(), Error> {
+        self.channel.send()
+    }
+}
+
+impl Submitter for Client {
+    /// # Errors
+    ///
+    /// Returns an error if:
+    ///
+    /// * [`Error::Closed`] if the client is closed.
+    fn submit(&self) -> Result<(), Error> {
+        if self.is_closed() {
+            return Err(Error::Closed);
+        }
+        Self::submit(self)
+    }
+}
+```
+
+```console
+$ yscope-linter example.rs
+example.rs:17:15: DOC002 errors-doc: `submit` forwards errors from `Self::submit`, but `# Errors` does not list it; add "* Forwards [`Self::submit`]'s return values on failure."
+```
+
+Without the inherent impl of `Client` in the file, the fn passes, with or without a bullet for
+`Client::submit`.
+
 ## How calls and errors are matched to bullets
 
 Each side is reduced to a path of identifiers before matching:
@@ -999,6 +1041,8 @@ A Forwards bullet is kept in these cases:
 * The body has an opaque source, and some fn of the file calls the function. The opaque `Result` may
   come from that call, such as a task that another fn spawns.
 * It names, in a bare code span, a callable parameter of the fn that the body mentions.
+* It names the same-name fn that a trait impl method calls through `Self::`, its type or `self.`,
+  and the file has no inherent fn of that name. See [Recursion](#recursion).
 
 A Forwards bullet that names a type rather than a function gets a format finding instead.
 
@@ -1203,6 +1247,10 @@ The rule reads syntax, not types. These cases are known to be wrong or incomplet
 * Return types are recognized by name only. An alias that doesn't end with `Result` isn't checked.
 * When the rule skips test code, out-of-line `#[cfg(test)]` modules declared with `#[path]`, or
   inside an inline module of the parent, are checked as non-test code.
+* A trait impl method's same-name call through `Self::`, its type or `self.` is matched to an
+  inherent fn of the file by the last segment of the impl's type only, and receiver kinds are
+  ignored. So an inherent `send` of an unrelated `Client` in a nested module makes the call a
+  forward, and the call of a `Box<Client>` impl is an optional forward although it is recursion.
 
 When the rule is wrong for a fn, suppress it with a reason, rather than bending the docstring:
 

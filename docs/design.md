@@ -911,10 +911,13 @@ line through its `fn` keyword.
 ### Item walk
 
 `ItemWalker` implements `syn::visit::Visit` over the file with a stack of `ItemContext`s, each
-holding the self names, the generic type parameters, and whether its fns are associated:
+holding the self names, the generic type parameters, whether its fns are associated, and the self
+type of a trait impl:
 
 * `visit_item_impl` pushes the self type's last segment and the trait's name as self names, with the
-  impl's type parameters, and marks the context as associated.
+  impl's type parameters, and marks the context as associated. For a trait impl, the self type's
+  last segment is also the trait impl's self type, unless the self type isn't a path or is a type
+  parameter of the impl, as in `impl<T: Inner> Outer for T`.
 * `visit_item_trait` pushes the trait's name, with its type parameters, as an associated context.
 * `visit_item_fn`, `visit_impl_item_fn` and `visit_trait_item_fn` record the fn, then recurse into
   its body in a fresh, non-associated context. So nested fns, impls and modules are checked on their
@@ -939,7 +942,7 @@ Each `FnItem` records:
   reference, `Box` or `Pin` of one of these.
 * `scope`: the `SymbolScope` built from the context's self names and the generic type parameters of
   the context and the fn.
-* `is_associated`, used by the [recursion rule](#callees).
+* `is_associated` and `trait_impl_self_type`, used by the [recursion rule](#callees).
 * `anchor` and `header`: the line spans of the diagnostics.
 
 ### Out-of-line test modules
@@ -1105,6 +1108,8 @@ its forward bullet and path, or the prose. So the callers never align parallel v
   its trait's name, or none for a free fn.
 * `identifier_counts`: how often each identifier appears in the file, including inside macro bodies.
   The imported-only trait rule of `QualifierLinks` uses it.
+* `has_inherent_fn(type, name)`: whether an inherent impl of the file whose self type's last
+  segment is `type` has a fn named `name`. The [recursion rule](#callees) uses it.
 * `is_called(name)`: whether the file calls `name`, as the last segment of a call path, a method
   name, or an identifier followed by a parenthesized group inside a macro body.
 * The trait names, `use` imports and aliases of `qualifier_links()`.
@@ -1147,8 +1152,8 @@ fn. Nested items aren't entered at all (`visit_item` doesn't recurse).
 * `has_opaque_source` and `has_opaque_error`: whether some [opaque site](#opaque-sites) exists at
   depth 0.
 * `nested_callees`: the callee of every obligation that would be recorded inside a nested scope,
-  such as the `register` of `self.spawn_body(async move { this.register().await? })`. They only keep
-  `Forwards` bullets from going stale.
+  such as the `register` of `self.spawn_body(async move { this.register().await? })`, and the callee
+  of every [possibly recursive](#callees) call. They only keep `Forwards` bullets from going stale.
 * `mentions`: every expression path, call path, method path (qualified by its builder type, see
   [Query builders](#query-builders)) and struct-literal path, at any depth, plus `into_iter` and
   `next` for every `for` loop and every identifier of an unparsed macro. Patterns are never mentions
@@ -1384,10 +1389,21 @@ spellings of callable arguments:
   the binding itself is never a callee.
 * `Ok`, `Some`, `Err`, value methods and calls of anything other than a path have no callee.
 
-A call of the scanned fn itself forwards nothing. It is recursive when its last segment is the fn's
-name, and either the path is unqualified and the fn isn't associated, or the qualifier is a name of
-`Self`. A method call `self.name(..)` is recursive too. Inside an impl or trait, an unqualified
-`parse(x)` can't call the method `parse`, so it forwards the free fn.
+A call of the scanned fn itself forwards nothing. A call whose last segment is the fn's name is
+recursive when the path is unqualified and the fn isn't associated. Inside an impl or trait, an
+unqualified `parse(x)` can't call the method `parse`, so it forwards the free fn. A call whose
+qualifier is a name of `Self`, or a method call `self.name(..)`, which calls through `Self`, has one
+of three outcomes, which `BodyScanner::self_call_recursion` decides as a `Recursion`:
+
+* `Certain`: the call is recursive and records nothing. This is the outcome outside a trait impl,
+  for a trait impl without a self type (`FnItem::trait_impl_self_type`), and for a qualifier that is
+  the trait's name, such as `Submitter::submit(self)` or `<Self as Submitter>::submit(self)`.
+* `No`: in a trait impl, the qualifier is `Self` or the self type, and
+  `FileIndex::has_inherent_fn` finds the type's inherent fn of that name. Rust looks up inherent fns
+  before trait methods, so the call forwards that fn like any other call, spelled as written.
+* `Possible`: the same, but the file has no such inherent fn. Another file may declare it, so the
+  call records its callee as a nested callee only. A bullet for it is kept, and a missing bullet
+  isn't reported.
 
 #### Higher-order calls
 
@@ -1559,7 +1575,7 @@ Reverse checks find stale documentation. They apply to bullets only, never to pr
 * A forward path, unless it names a type, is stale when no callee is paired with it and
   `is_stale_forward` holds. A path is kept in these cases:
   * A nested callee matches it, exactly or loosely, such as a `?` inside the async block the body
-    hands to `Self::spawn_body`.
+    hands to `Self::spawn_body`, or the callee of a possibly recursive call of a trait impl method.
   * The body mentions it and has an opaque site, since the call's error may leave through that site,
     as in `let r = Wrapper(foo()); r.0?`.
   * The body has an `OpaqueSource` site and the file calls the path's last segment anywhere
@@ -2158,6 +2174,19 @@ Matching:
   is a false positive.
 * A `Forwards` bullet whose call's error is handled (`if let Err(e) = foo() { log }`) isn't stale in
   a fn with an opaque site.
+* The inherent fns of the [recursion rule](#callees) are found by the last segment of the impl's
+  self type, file-wide, including nested modules and `#[cfg(test)]` code. So an inherent fn of an
+  unrelated type with the same last segment makes a trait impl's same-name call a forward.
+* A trait impl whose self type isn't a path (`&Client`, tuples, slices, `dyn Trait`) or is a type
+  parameter of the impl keeps the recursion rule, although auto-deref may reach an inherent fn.
+* A wrapper self type such as `Box<Client>` is looked up as `Box`, so its same-name `Self::` call is
+  a possible forward, although Rust resolves it to the trait method.
+* Method syntax ignores receiver kinds, so `self.m()` counts as a call of an inherent `m` even when
+  Rust's method probe picks the trait method, such as for an inherent `fn m(self)` or a `self:
+  Arc<Self>` receiver.
+* In the possible case, a bullet that names the trait's method (`` [`Submitter::submit`] ``) is
+  kept too, since the trait's name is a name of `Self`.
+* `<Self>::m(..)` without a trait has no qualifier, so it forwards `m`.
 
 What `symbol-order` checks:
 
