@@ -10,6 +10,7 @@ use crate::rules::errors_doc::symbol::SymbolScope;
 use crate::syntax::span;
 use crate::syntax::symbol_path::SymbolPath;
 use crate::syntax::test_code;
+use crate::syntax::types::is_result_path;
 use crate::syntax::types::peel_type_parens;
 use crate::syntax::types::type_last_segment;
 
@@ -387,15 +388,6 @@ fn result_return_path(output: &syn::ReturnType) -> Option<(&syn::Path, bool)> {
             .map(|path| (path, true)),
         _ => None,
     }
-}
-
-/// # Returns
-///
-/// Whether `path`'s last segment ends with `Result`.
-fn is_result_path(path: &syn::Path) -> bool {
-    path.segments
-        .last()
-        .is_some_and(|segment| segment.ident.to_string().ends_with("Result"))
 }
 
 /// # Returns
