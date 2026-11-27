@@ -1,4 +1,4 @@
-//! The lines of the items in a `syn` syntax tree.
+//! The lines of the items in a `syn` syntax tree, and of any item or statement.
 
 use proc_macro2::Delimiter;
 use proc_macro2::TokenStream;
@@ -10,14 +10,14 @@ use crate::diagnostic::Position;
 use crate::line_ranges::LineSpan;
 use crate::syntax::span;
 
-/// The lines of one item.
+/// The lines of one item or statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemLines {
-    /// From the item's first attribute or doc line through its last line.
+    /// From the first attribute or doc line through the last line.
     pub span: LineSpan,
 
-    /// From the item's first attribute or doc line through the line where the item itself starts,
-    /// after its outer attributes.
+    /// From the first attribute or doc line through the line where the item or statement itself
+    /// starts, after its outer attributes.
     pub header: LineSpan,
 }
 
@@ -38,7 +38,8 @@ pub fn collect(syntax_tree: &syn::File) -> Vec<ItemLines> {
     item_collector.item_lines
 }
 
-/// Finds the lines of one item, such as a `syn::Item`, a `syn::ImplItemFn` or a `syn::TraitItemFn`.
+/// Finds the lines of one item or statement, such as a `syn::Item`, a `syn::ImplItemFn`, a
+/// `syn::TraitItemFn` or a `syn::Stmt`.
 ///
 /// # Returns
 ///
@@ -116,12 +117,12 @@ impl<'ast> Visit<'ast> for ItemCollector {
     }
 }
 
-/// Finds the lines of an item from its tokens. Its outer attributes, including doc comments, are
-/// the leading `#` and `[..]` pairs.
+/// Finds the lines of an item or statement from its tokens. Its outer attributes, including doc
+/// comments, are the leading `#` and `[..]` pairs.
 ///
 /// # Returns
 ///
-/// The item's lines, or [`None`] if it has no token after its attributes.
+/// The lines, or [`None`] if there is no token after the attributes.
 fn lines_of(tokens: TokenStream) -> Option<ItemLines> {
     let token_trees: Vec<TokenTree> = tokens.into_iter().collect();
     let first_line = span::start_position(token_trees.first()?.span()).line;

@@ -18,6 +18,7 @@ use crate::suppression::ParsedComments;
 use crate::syntax::item_lines;
 use crate::syntax::item_lines::ItemLines;
 use crate::syntax::span;
+use crate::syntax::statement_lines;
 use crate::syntax::test_code::TestModuleCache;
 use crate::syntax::test_code::TestModuleVerdict;
 
@@ -73,7 +74,8 @@ impl<'source> FileContext<'source> {
 
     /// # Returns
     ///
-    /// The comment lines that are not suppression comments, in source order.
+    /// The comment lines that are neither suppression comments nor lines that their reasons
+    /// continue on, in source order.
     pub fn comment_lines(&self) -> &[CommentLine] {
         &self.parsed_comments.comment_lines
     }
@@ -138,6 +140,9 @@ impl<'source> FileContext<'source> {
     /// * The items of `allow-item` suppressions are located in the syntax tree, which is parsed
     ///   only if the file has such a suppression. If the file fails to lex or parse, each of them
     ///   is an `invalid-suppression` diagnostic.
+    /// * An own-line `allow` above a statement covers it through its end. The syntax tree is parsed
+    ///   only if the file has such a suppression. If the file fails to lex or parse, each of them
+    ///   covers one line, with no diagnostic.
     /// * Suppressions drop the diagnostics they cover, and unused suppressions are reported, as
     ///   [`suppression::Suppressions::apply`] decides with `rule_set`.
     /// * Each malformed or misplaced suppression is an `invalid-suppression` diagnostic.
@@ -152,6 +157,12 @@ impl<'source> FileContext<'source> {
             .suppressions
             .has_unlocated_items()
             .then(|| self.item_lines());
+        let statement_lines = self
+            .parsed_comments
+            .suppressions
+            .has_statement_units()
+            .then(|| self.optional_syntax_tree().map(statement_lines::collect))
+            .flatten();
         let meta_diagnostics: Vec<Diagnostic> = self
             .parse_error_diagnostic()
             .into_iter()
@@ -171,6 +182,11 @@ impl<'source> FileContext<'source> {
                 invalid_suppressions.extend(parsed_comments.suppressions.reject_items(&reason));
             }
             None => {}
+        }
+        if let Some(statement_lines) = statement_lines {
+            parsed_comments
+                .suppressions
+                .extend_statements(&statement_lines);
         }
         let lex_diagnostic = lex_error.map(|lex_error| {
             Diagnostic::new(
@@ -392,5 +408,54 @@ mod tests {
             "finding".to_owned(),
         );
         assert_eq!(context.finish(vec![finding], &RuleSet::all()), []);
+    }
+
+    #[test]
+    fn allow_above_a_statement_is_extended_in_the_lazily_parsed_tree() {
+        let source_text =
+            "fn f() {\n    // yscope-linter: allow(errors-doc): reason\n    a\n        .b()?;\n}\n";
+        let finding = Diagnostic::new(
+            RuleId::ErrorsDoc.into(),
+            Position {
+                line: 4,
+                column: 13,
+            },
+            "finding".to_owned(),
+        );
+        let test_module_cache = TestModuleCache::default();
+        let context = FileContext::new(Path::new("a.rs"), source_text, &test_module_cache);
+        assert_eq!(context.finish(vec![finding.clone()], &RuleSet::all()), []);
+
+        let source_text = format!("{source_text}\"open\n");
+        let context = FileContext::new(Path::new("a.rs"), &source_text, &test_module_cache);
+        let diagnostics: Vec<_> = context
+            .finish(vec![finding], &RuleSet::all())
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.kind(),
+                    diagnostic.position().line,
+                    diagnostic.message().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            diagnostics,
+            [
+                (
+                    DiagnosticKind::ParseError,
+                    6,
+                    "unterminated string literal; only the comments before it are checked"
+                        .to_owned()
+                ),
+                (RuleId::ErrorsDoc.into(), 4, "finding".to_owned()),
+                (
+                    DiagnosticKind::UnusedSuppression,
+                    2,
+                    "this suppression of errors-doc covers no finding on line 3; remove it"
+                        .to_owned()
+                ),
+            ]
+        );
     }
 }

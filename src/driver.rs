@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn greedy_wrap_only_run_parses_only_files_with_an_allow_item() {
+    fn greedy_wrap_only_run_parses_only_files_that_need_items_or_statements() {
         let rule_set: RuleSet = std::iter::once(RuleId::CommentGreedyWrap).collect();
         let kinds = |source_text: &str| -> Vec<DiagnosticKind> {
             file_checker(rule_set.clone())
@@ -391,5 +391,102 @@ mod tests {
             kinds("// yscope-linter: allow-item(comment-greedy-wrap): reason\nfn f( {}\n"),
             [DiagnosticKind::InvalidSuppression]
         );
+        assert_eq!(
+            kinds("// yscope-linter: allow(comment-greedy-wrap): reason\nfn f( {}\n"),
+            [DiagnosticKind::UnusedSuppression]
+        );
+    }
+
+    #[test]
+    fn own_line_allow_above_a_multi_line_statement_covers_its_question_mark() {
+        let source_text = concat!(
+            "/// Runs the job.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * Forwards [`Store::insert`]'s return values on failure.\n",
+            "fn run(&self, job: Job) -> Result<(), Error> {\n",
+            "    self.store.insert(&job)?;\n",
+            "    // yscope-linter: allow(errors-doc): the audit log documents its own errors\n",
+            "    self.audit\n",
+            "        .record(&job)\n",
+            "        .await?;\n",
+            "    Ok(())\n",
+            "}\n",
+        );
+        let diagnostics =
+            file_checker(RuleSet::all()).check(Path::new("a.rs"), source_text, &LineFilter::All);
+        assert_eq!(rendered(diagnostics), Vec::<String>::new());
+    }
+
+    #[test]
+    fn allow_with_a_continued_reason_covers_the_statement_below_it() {
+        let source_text = concat!(
+            "/// Runs the job.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * Forwards [`Store::insert`]'s return values on failure.\n",
+            "fn run(&self, job: Job) -> Result<(), Error> {\n",
+            "    self.store.insert(&job)?;\n",
+            "    // yscope-linter: allow(errors-doc): the audit log documents its own errors, and \
+             the caller\n",
+            "    //   reports them to the user who retries the job\n",
+            "    self.audit\n",
+            "        .record(&job)\n",
+            "        .await?;\n",
+            "    Ok(())\n",
+            "}\n",
+        );
+        let diagnostics =
+            file_checker(RuleSet::all()).check(Path::new("a.rs"), source_text, &LineFilter::All);
+        assert_eq!(rendered(diagnostics), Vec::<String>::new());
+
+        let rule_set: RuleSet = std::iter::once(RuleId::CommentGreedyWrap).collect();
+        let source_text = concat!(
+            "fn f() {\n",
+            "    // yscope-linter: allow(comment-greedy-wrap): the comments in the closure are \
+             copied from\n",
+            "    //   the upstream source\n",
+            "    let c = || {\n",
+            "        // A comment that ends\n",
+            "        // early.\n",
+            "    };\n",
+            "}\n",
+        );
+        assert_eq!(
+            file_checker(rule_set).check(Path::new("a.rs"), source_text, &LineFilter::All),
+            []
+        );
+    }
+
+    #[test]
+    fn fn_header_allow_still_covers_every_errors_doc_finding_of_the_fn() {
+        let source_text = concat!(
+            "/// Runs.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * Forwards [`a`]'s return values on failure.\n",
+            "// yscope-linter: allow(errors-doc): the errors come from the callback the caller \
+             provides, so the\n",
+            "//   caller documents them\n",
+            "fn run() -> Result<(), E> {\n",
+            "    b()?;\n",
+            "    self.audit\n",
+            "        .record()\n",
+            "        .await?;\n",
+            "    Ok(())\n",
+            "}\n",
+        );
+        let diagnostics =
+            file_checker(RuleSet::all()).check(Path::new("a.rs"), source_text, &LineFilter::All);
+        assert_eq!(rendered(diagnostics), Vec::<String>::new());
     }
 }
