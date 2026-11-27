@@ -156,7 +156,7 @@ whether a file is a test module can't be read or parsed, the file is checked as 
 names every enabled rule it affects:
 
 ```text
-src/store/tests.rs:1:1: LNT001 parse-error: can't tell whether this file is a `#[cfg(test)]` module: syn failed to parse `src/store/mod.rs` (cannot parse string into token stream); errors-doc, symbol-order, trait-params-doc, type-params-doc check it as non-test code
+src/store/tests.rs:1:1: LNT001 parse-error: can't tell whether this file is a `#[cfg(test)]` module: syn failed to parse `src/store/mod.rs` (cannot parse string into token stream); errors-doc, symbol-order, trait-params-doc, tuple-returns-doc, type-params-doc check it as non-test code
 ```
 
 ## The section format

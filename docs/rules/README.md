@@ -23,6 +23,7 @@ src/cache.rs:12:1: DOC003 type-params-doc: struct `Cache` has generic parameters
 | `DOC002` | [`errors-doc`](errors-doc.md) | `DOC` | The `# Errors` section of a fn's docstring documents every error the fn returns directly and every function whose errors it forwards, and nothing it doesn't. |
 | `DOC003` | [`type-params-doc`](type-params-doc.md) | `DOC` | A documented item with generic parameters has a `# Type Parameters` section with one bullet per type, lifetime and const parameter, and nothing else. |
 | `DOC004` | [`trait-params-doc`](trait-params-doc.md) | `DOC` | A documented trait method declaration has a `# Parameters` section with one bullet per parameter, and no other item has a `# Parameters` section. |
+| `DOC006` | [`tuple-returns-doc`](tuple-returns-doc.md) | `DOC` | The `# Returns` section of a documented fn that returns a tuple, or a `Result` of one, starts with "A tuple containing:" or "A tuple on success, containing:" and lists one bullet per element. |
 | `ORG001` | [`symbol-order`](symbol-order.md) | `ORG` | The items of each module and of each inherent impl block follow the symbol ordering convention. |
 
 ## Meta codes
@@ -47,11 +48,12 @@ kind of rule it is:
 | `ORG` | Code organization: ordering, layout and placement. |
 | `LNT` | Nothing: it holds the linter's own diagnostics, the [meta codes](#meta-codes). |
 
-* Codes are numbered from `001` in each set, in the order the rules were added.
+* Codes are numbered from `001` in each set, in the order the rules were added. A number may be
+  reserved for a rule in progress: `DOC005` is.
 * A code is never renumbered, and never reused by another rule, even after its rule is
   [deprecated](#deprecation-policy).
-* A new rule takes the next free number in its set. So the next `DOC` rule is `DOC005`, and the next
-  `ORG` rule is `ORG002`.
+* A new rule takes the next free number in its set, after the reserved ones. So the next `DOC` rule
+  is `DOC007`, and the next `ORG` rule is `ORG002`.
 
 ## Selecting rules by name, code or set
 

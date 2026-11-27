@@ -9,6 +9,8 @@
 * A `# Type Parameters` section documents every generic parameter of an item.
 * A `# Parameters` section documents every parameter of a trait method declaration, and appears
   nowhere else.
+* A `# Returns` section of a fn that returns a tuple introduces the tuple with a fixed sentence and
+  lists one bullet per element.
 
 It reads the source only, without building the crate, so it can lint a whole repository, the
 packages of a cargo workspace, or only the lines a pull request changes.
@@ -21,6 +23,7 @@ packages of a cargo workspace, or only the lines a pull request changes.
 | `DOC002` | [`errors-doc`](docs/rules/errors-doc.md) | The `# Errors` section of a fn's docstring documents every error the fn returns directly and every function whose errors it forwards, and nothing it doesn't. |
 | `DOC003` | [`type-params-doc`](docs/rules/type-params-doc.md) | A documented item with generic parameters has a `# Type Parameters` section with one bullet per type, lifetime and const parameter, and nothing else. |
 | `DOC004` | [`trait-params-doc`](docs/rules/trait-params-doc.md) | A documented trait method declaration has a `# Parameters` section with one bullet per parameter, and no other item has a `# Parameters` section. |
+| `DOC006` | [`tuple-returns-doc`](docs/rules/tuple-returns-doc.md) | The `# Returns` section of a documented fn that returns a tuple, or a `Result` of one, starts with "A tuple containing:" or "A tuple on success, containing:" and lists one bullet per element. |
 | `ORG001` | [`symbol-order`](docs/rules/symbol-order.md) | The items of each module are grouped by visibility (`pub` first, private last), and within a group ordered consts, statics, types, then fns, with each type directly followed by its impl blocks. Inside an inherent impl, associated consts come before fns, and `pub` fns before private ones. |
 
 Each rule has a stable code: a set prefix, `DOC` for comments and docstrings or `ORG` for code

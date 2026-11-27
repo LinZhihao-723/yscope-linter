@@ -15,6 +15,8 @@ users elsewhere:
 * [`docs/rules/symbol-order.md`](rules/symbol-order.md): the item ordering rule.
 * [`docs/rules/type-params-doc.md`](rules/type-params-doc.md): the `# Type Parameters` rule.
 * [`docs/rules/trait-params-doc.md`](rules/trait-params-doc.md): the `# Parameters` rule.
+* [`docs/rules/tuple-returns-doc.md`](rules/tuple-returns-doc.md): the rule for the `# Returns`
+  sections of fns that return tuples.
 * [`docs/suppression.md`](suppression.md): the suppression comments.
 
 This document doesn't repeat those. It links to them where the user-facing behavior is the
@@ -65,6 +67,7 @@ specification.
   * [symbol-order diagnostics](#symbol-order-diagnostics)
 * [type-params-doc](#type-params-doc)
 * [trait-params-doc](#trait-params-doc)
+* [tuple-returns-doc](#tuple-returns-doc)
 * [Suppression internals](#suppression-internals)
 * [Diagnostics and output](#diagnostics-and-output)
 * [Line ranges and the diff filter](#line-ranges-and-the-diff-filter)
@@ -92,6 +95,9 @@ Non-goals:
 
 * Requiring a `# Errors` section. Only existing sections are checked; `clippy::missing_errors_doc`
   covers their presence.
+* Requiring a `# Returns` section in `tuple-returns-doc`. It checks only the sections that exist;
+  requiring them is the scope of a separate rule,
+  [y-scope/yscope-linter#7](https://github.com/y-scope/yscope-linter/issues/7).
 * Requiring docstrings. Every docstring rule skips an item without one: `missing_docs` and review
   cover their presence. `type-params-doc` and `trait-params-doc` do require their section in a
   docstring that exists.
@@ -150,10 +156,10 @@ Rule-agnostic helpers:
 
 * `src/syntax/`: helpers over `syn` trees. `span.rs` converts span locations to positions,
   `item_lines.rs` finds the lines of every item or of one item, `symbol_path.rs` normalizes paths,
-  `types.rs` looks through parenthesized types, `test_code.rs` recognizes test attributes and
-  out-of-line test modules, `visibility.rs` classifies visibilities into the ordering groups,
-  `crate_names.rs` tells crate-local paths from foreign ones, and `doc_items.rs` walks the items
-  whose docstrings document their signatures.
+  `types.rs` looks through parenthesized types and `impl Future` outputs and recognizes `Result`
+  paths, `test_code.rs` recognizes test attributes and out-of-line test modules, `visibility.rs`
+  classifies visibilities into the ordering groups, `crate_names.rs` tells crate-local paths from
+  foreign ones, and `doc_items.rs` walks the items whose docstrings document their signatures.
 * `src/doc/`: helpers over docstrings. `doc_lines.rs` turns `#[doc]` attributes into positioned
   lines, `links.rs` finds code spans, links and link reference definitions, `section.rs` selects a
   `# Title` section and groups its lines, and `param_section.rs` parses and compares the sections
@@ -174,8 +180,8 @@ Rules:
 * `src/rules/symbol_order/`: `scope.rs` (the counted items of a scope and their keys), `keys.rs`
   (sort keys and reasons), `moves.rs` (the kept subsequence and placements) and `check.rs` (the
   `Checker`, the scope walk and the diagnostics).
-* `src/rules/type_params_doc/` and `src/rules/trait_params_doc/`: each a `check.rs` with the rule's
-  `Checker`, plus whatever modules the rule needs.
+* `src/rules/type_params_doc/`, `src/rules/trait_params_doc/` and `src/rules/tuple_returns_doc/`:
+  each a `check.rs` with the rule's `Checker`, plus whatever modules the rule needs.
 
 Tests:
 
@@ -439,8 +445,11 @@ rule that is deprecated.
 1. Pick the set: `DOC` for a rule about comments and docstrings, `ORG` for one about code
    organization. A rule that fits neither needs a new `CodeSet`, which is a decision for the
    maintainers.
-2. Take the next free number in the set: one more than the highest code in it, deprecated rules
-   included. Never reuse a number.
+2. Take the next free number in the set: one more than the highest code in it, deprecated rules and
+   reserved numbers included. Never reuse a number. A number may be reserved for a rule in progress,
+   as `DOC005` is for [y-scope/yscope-linter#7](https://github.com/y-scope/yscope-linter/issues/7):
+   add it to `reserved_codes` in the gap test of `src/diagnostic.rs`, and remove it there when the
+   rule lands.
 3. Add a `RuleId` variant, add it to `RuleId::ALL`, and give it its name in `RuleId::name`, its code
    in `RuleId::code`, and `false` in `RuleId::is_deprecated`. `--rule`, suppression parsing, set
    selectors and the unknown-rule message pick it up from there.
@@ -942,7 +951,7 @@ section.
 Section selection and line grouping are rule-agnostic, in `doc/section.rs`:
 `section::find(doc_lines, title)` returns a `DocSection` (header position, body line range,
 duplicate headers), and `DocSection::content` groups its body into a `SectionContent`. The rules
-below hold for any title; `errors-doc` uses `Errors`.
+below hold for any title; `errors-doc` uses `Errors`, and `tuple-returns-doc` uses `Returns`.
 
 Section selection:
 
@@ -962,7 +971,11 @@ Definition lines are never bullets or prose.
 Inside the section, lines are grouped into prose paragraphs, top-level bullets (at the section's
 smallest bullet indent) and sub-bullets (deeper bullets, which belong to the preceding top-level
 bullet). A bullet's continuation lines are joined with one space, so a bullet split across lines,
-such as `Forwards` followed by a long link on the next line, is parsed as one string.
+such as `Forwards` followed by a long link on the next line, is parsed as one string. Each top-level
+bullet also records `follows_prose`, whether a prose paragraph comes right before it, and
+`num_prose_before`, the number of prose paragraphs of the section before it. The [parameter
+sections](#parameter-sections) split their lists at `follows_prose`, and
+[tuple-returns-doc](#tuple-returns-doc) finds the list right after the intro by `num_prose_before`.
 
 `doc/links.rs` finds the references in a joined string, in order:
 
@@ -1607,15 +1620,16 @@ example ``fn `load` ``):
 
 The order of the bullets isn't checked against the order of the parameters.
 
-`syntax/doc_items.rs` walks the items both rules look at. `doc_items::collect(syntax_tree,
-skip_tests)` returns a `DocItem` (kind, name, attributes and `ItemLines`) for every fn, struct,
-enum, union, trait and type alias, including the ones nested in modules and fn bodies. Its
-`DocItemKind` tells free fns, inherent methods, trait impl methods and trait method declarations
-apart, and each kind carries the item's signature if it is a fn, or its generics otherwise.
-`DocItem::generics` gives the item's own generics either way. With `skip_tests`, it skips
-`#[cfg(test)]` items with everything in them and fns with a `test` attribute, as the `errors-doc`
-item walk does. Both rules check only documented items: `doc_lines::collect_documented` gives an
-item's doc lines only when at least one of them is non-blank.
+`syntax/doc_items.rs` walks the items that both rules, and [tuple-returns-doc](#tuple-returns-doc),
+look at. `doc_items::collect(syntax_tree, skip_tests)` returns a `DocItem` (kind, name, attributes
+and `ItemLines`) for every fn, struct, enum, union, trait and type alias, including the ones nested
+in modules and fn bodies. Its `DocItemKind` tells free fns, inherent methods, trait impl methods and
+trait method declarations apart, and each kind carries the item's signature if it is a fn, or its
+generics otherwise. `DocItem::generics` gives the item's own generics either way, and
+`DocItemKind::signature` the signature of a fn. With `skip_tests`, it skips `#[cfg(test)]` items
+with everything in them and fns with a `test` attribute, as the `errors-doc` item walk does. All
+three rules check only documented items: `doc_lines::collect_documented` gives an item's doc lines
+only when at least one of them is non-blank.
 
 ## symbol-order
 
@@ -1826,6 +1840,61 @@ Checks, with the [shared messages](#parameter-sections) of `PARAMETERS`:
 
 Every diagnostic has the item's span as its anchor and the item's header as its fn header.
 
+## tuple-returns-doc
+
+The rule checks the tuple convention of the y-scope Rust `coding-style.md`: a tuple return value is
+documented as a bulleted list of its elements, in order, after the intro `A tuple containing:`. For
+a `Result` of a tuple, the intro is `A tuple on success, containing:`, after the "on success"
+convention of `# Returns`. The rule was requested in
+[y-scope/yscope-linter#17](https://github.com/y-scope/yscope-linter/issues/17), after variants such
+as `On success, a tuple containing:` drifted across CLP.
+
+Checked items, from `doc_items::collect`: documented fns of every kind, with
+`DocItemKind::signature` giving their signature (free fns, nested ones too, inherent methods, trait
+impl methods and trait method declarations), whose docstring has a section that
+`section::find(doc_lines, "Returns")` selects. Test code is skipped with `--skip-tests`, as for the
+other docstring rules.
+
+`TupleReturn::of(&sig.output)` classifies the return type as written:
+
+* An `impl Trait` type with a `Future<Output = R>` bound is peeled to `R`, once, with
+  `types::impl_future_output`. An `async fn`'s `sig.output` is already its declared type.
+* A `Type::Tuple` of at least two elements, after `peel_type_parens`, is a plain tuple return.
+* A `Type::Path` for which `types::is_result_path` holds (its last segment ends with `Result`, as
+  for `errors-doc`), and whose first generic type argument is such a tuple, is a `Result` of a
+  tuple.
+* Anything else is not checked: `()`, `(A,)`, `Result<(), E>`, wrapper types such as `Option<(A,
+  B)>`, type aliases, argument-less `*Result` aliases and `dyn Future` returns.
+
+The section is grouped with `DocSection::content`. Then:
+
+* The intro is right when the first content line starts a prose paragraph and that paragraph, with
+  its lines joined, is exactly the intro. Otherwise the intro message is reported at the first
+  content line, or at the header if the section is empty.
+* The element list is the top-level bullets whose `num_prose_before` is 1 if the section starts with
+  prose, and 0 if it starts with a bullet: the list right after the first paragraph, or the list the
+  section starts with. A list after a later paragraph, such as one under a `## Errors` subsection,
+  is never counted, and sub-bullets never are.
+* The count is checked when the intro is right or the element list isn't empty. So a wrong prose
+  intro with no list gets only the intro message, and a section that starts with a wrong number of
+  bullets gets both messages at its first bullet.
+* A non-empty list with the wrong count gets the count message at its first bullet: "add a bullet
+  for each element" for too few, and "keep one bullet per element" for too many.
+* An empty list after a right intro gets the count message for 0 elements at the intro, unless the
+  section has bullets after a later paragraph. Then the message says that no list follows the intro,
+  and asks to move the bullets up.
+
+Messages, with `f` the fn's bare name, as in `errors-doc`, and `S` the subject `` `f` returns a
+N-element tuple `` or `` `f` returns a `Result` of a N-element tuple ``:
+
+* `` `f` returns a tuple; start `# Returns` with "A tuple containing:" ``
+* `` `f` returns a `Result` of a tuple; start `# Returns` with "A tuple on success, containing:" ``
+* `` S, but `# Returns` lists M elements; add a bullet for each element, in order ``
+* `` S, but `# Returns` lists M elements; keep one bullet per element, in order ``
+* `` S, but no list follows the `# Returns` intro; move the element bullets right after it ``
+
+Every diagnostic has the item's span as its anchor and the item's header as its fn header.
+
 ## Suppression internals
 
 The suppression forms and their user-facing semantics are in
@@ -1910,7 +1979,8 @@ The anchor span is used only by the line filter, and is never printed:
 * `errors-doc`: the whole fn, from its first attribute or doc line to its closing brace. A CI run
   then reports every `errors-doc` finding of any fn it touches, including a body change that makes
   the docstring stale.
-* `type-params-doc` and `trait-params-doc`: the whole item, as `item_lines::of` finds it.
+* `type-params-doc`, `trait-params-doc` and `tuple-returns-doc`: the whole item, as
+  `item_lines::of` finds it.
 * `symbol-order`: the lines from the misplaced item through the item it should be placed next to,
   so a change anywhere between them reports it.
 * Meta codes: their own line.
@@ -1980,13 +2050,14 @@ fn or comment it belonged to, and the anchor spans cover the rest.
 * `driver.rs` tests the interactions of the pipeline: a lex failure, a `syn` failure in a run with
   and without `errors-doc`, the anchor spans against line filters, suppressions ending paragraphs,
   and the lazy parse for `allow-item`.
-* Every `symbol-order`, `type-params-doc` and `trait-params-doc` check and exemption has a fixture
-  that produces it or is clean, in the rule's own unit tests. `doc/section.rs`,
-  `doc/param_section.rs`, `syntax/visibility.rs`, `syntax/crate_names.rs` and `syntax/doc_items.rs`
-  have their own unit tests.
+* Every `symbol-order`, `type-params-doc`, `trait-params-doc` and `tuple-returns-doc` check and
+  exemption has a fixture that produces it or is clean, in the rule's own unit tests.
+  `doc/section.rs`, `doc/param_section.rs`, `syntax/types.rs`, `syntax/visibility.rs`,
+  `syntax/crate_names.rs` and `syntax/doc_items.rs` have their own unit tests.
 * `diagnostic.rs` freezes the code table: `codes_are_frozen` lists every `(code, name)` pair, so
   renumbering or reusing a code fails a test. Other tests check that the codes and names are unique,
-  that each code is well-formed, and that each set is numbered from 1 without gaps.
+  that each code is well-formed, and that each set is numbered from 1 without gaps once its
+  reserved numbers are counted.
 * `diagnostic.rs` also tests that diagnostics at one position sort by name, not by code.
 * The deprecation paths have no tests until a rule is deprecated. See [Deprecating a
   rule](#deprecating-a-rule).
@@ -2106,6 +2177,15 @@ What `type-params-doc` and `trait-params-doc` check:
 * A docstring built only from `#[doc = include_str!(..)]` counts as undocumented.
 * Bullet order isn't checked.
 
+What `tuple-returns-doc` checks:
+
+* The return type is read as written, so a tuple behind a type alias isn't seen, and any path whose
+  last segment ends with `Result` is taken as a `Result` with its `Ok` type first.
+* Only the number of top-level bullets is checked, not their wording or their order.
+* An element list indented deeper than a later bullet of the section is grouped as prose, since the
+  top-level indent is the section's smallest bullet indent. The fn then gets an intro or a count
+  finding it doesn't deserve.
+
 Input:
 
 * Quoted paths in `--diff` input (names with spaces or non-ASCII bytes) are an invalid argument.
@@ -2170,6 +2250,13 @@ Cargo mode:
   `Storage::load()?`. The loose pass needs a trait or an alias to link the qualifiers.
 * Checking more `impl Future` shapes. `Output` is often an alias that doesn't end in `Result`, so
   the gain is small.
+* Checking `Option<(A, B)>` in `tuple-returns-doc`, with `A tuple containing:` for the `Some` case.
+  It was decided against on
+  [y-scope/yscope-linter#17](https://github.com/y-scope/yscope-linter/issues/17): the convention
+  covers tuples and `Result`s of tuples only, and other wrappers stay unchecked.
+* Requiring nested bullets for a nested tuple element, such as `(A, (B, C))`, in
+  `tuple-returns-doc`. One top-level bullet per outer element is required, and nested bullets for
+  the inner elements are allowed but not required, as decided on the same issue.
 * A `--targets-from` input beside `--diff`. `--diff` covers CI, including pure deletions, and
   `FILE:RANGES` targets cover ad hoc use.
 * Positional targets in cargo mode, intersected with the packages' files. The path mode already

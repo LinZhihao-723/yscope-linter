@@ -66,8 +66,10 @@ What an `allow` covers depends on where it is:
   * If that line is an own-line comment, the unit is the whole comment block that starts there.
   * Otherwise, the unit is that one line.
 * Stacked own-line suppressions all cover the same unit.
-* For `errors-doc`, a covered line anywhere in a fn's header covers every finding of the fn. The
-  header runs from the fn's first attribute or doc line through its `fn` line.
+* For the docstring rules `errors-doc`, `type-params-doc`, `trait-params-doc` and
+  `tuple-returns-doc`, a covered line anywhere in an item's header covers every finding of the item.
+  The header runs from the item's first attribute or doc line through the item's own first line,
+  such as its `fn` line.
 
 An own-line `allow` above a comment block covers the whole block:
 
@@ -348,7 +350,7 @@ example.rs:3:1: LNT002 invalid-suppression: suppression needs a reason after `):
 example.rs:4:1: LNT002 invalid-suppression: suppression names no rule; expected `// yscope-linter: allow(<rule-id>[, <rule-id>]...): <reason>`
 example.rs:5:1: LNT002 invalid-suppression: malformed suppression; expected `// yscope-linter: allow(<rule-id>[, <rule-id>]...): <reason>`
 example.rs:6:1: LNT002 invalid-suppression: unknown suppression form `allow-block`; expected one of `allow`, `allow-item`, `allow-start`, `allow-end`, `allow-file`
-example.rs:7:1: LNT002 invalid-suppression: unknown rule `errors_doc`; expected a rule name or code, one of comment-greedy-wrap (DOC001), errors-doc (DOC002), symbol-order (ORG001), trait-params-doc (DOC004), type-params-doc (DOC003), or a set, one of DOC, ORG
+example.rs:7:1: LNT002 invalid-suppression: unknown rule `errors_doc`; expected a rule name or code, one of comment-greedy-wrap (DOC001), errors-doc (DOC002), symbol-order (ORG001), trait-params-doc (DOC004), tuple-returns-doc (DOC006), type-params-doc (DOC003), or a set, one of DOC, ORG
 example.rs:8:1: LNT002 invalid-suppression: `parse-error` is not a rule and can't be suppressed
 example.rs:9:1: LNT002 invalid-suppression: malformed suppression; expected `// yscope-linter: allow-end(<rule-id>[, <rule-id>]...)`
 ```
@@ -411,7 +413,7 @@ fn f( {}
 ```console
 $ yscope-linter example.rs
 example.rs:1:1: LNT002 invalid-suppression: can't locate the item of this `allow-item` suppression: syn failed to parse the file (cannot parse string into token stream)
-example.rs:2:5: LNT001 parse-error: syn failed to parse the file (cannot parse string into token stream); errors-doc, symbol-order, trait-params-doc, type-params-doc are skipped
+example.rs:2:5: LNT001 parse-error: syn failed to parse the file (cannot parse string into token stream); errors-doc, symbol-order, trait-params-doc, tuple-returns-doc, type-params-doc are skipped
 ```
 
 A `///` or `//!` comment that looks like a suppression is a doc line, not an invalid suppression. It
@@ -503,7 +505,8 @@ them:
 * An `unused-suppression` or `invalid-suppression` is reported only when the suppression's own line
   is selected.
 * A rule's finding is kept when its anchor touches a selected line. For `comment-greedy-wrap`, the
-  anchor is the under-filled line and the next line. For `errors-doc`, it is the whole fn.
+  anchor is the under-filled line and the next line. For `errors-doc`, `type-params-doc`,
+  `trait-params-doc` and `tuple-returns-doc`, it is the whole item.
 
 In this file, the suppression on line 2 is unused, and the comment on lines 4 and 5 is flagged:
 
