@@ -1,6 +1,6 @@
-//! A per-file index of fn bodies by name, of every identifier in the file, of the names under which
-//! two different qualifiers may name the same symbol, and of the `From` conversions between error
-//! types.
+//! A per-file index of fn bodies by name, of the fns of inherent impls by self type, of every
+//! identifier in the file, of the names under which two different qualifiers may name the same
+//! symbol, and of the `From` conversions between error types.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -50,6 +50,10 @@ pub struct FileIndex<'ast> {
     /// The enums the file declares.
     enum_names: HashSet<String>,
 
+    /// The names of the fns of the file's inherent impls, by the last segment of the impl's self
+    /// type.
+    inherent_fns: HashMap<String, HashSet<String>>,
+
     /// The impl self types and traits around the item the walk is in.
     owner_stack: Vec<Option<&'ast syn::Ident>>,
 }
@@ -69,6 +73,16 @@ impl<'ast> FileIndex<'ast> {
     /// The fns named `name` anywhere in the file.
     pub fn helper_fns(&self, name: &str) -> &[HelperFn<'ast>] {
         self.helper_fns.get(name).map_or(&[], Vec::as_slice)
+    }
+
+    /// # Returns
+    ///
+    /// Whether an inherent impl of the file whose self type's last segment is `type_name` has a fn
+    /// named `fn_name`.
+    pub fn has_inherent_fn(&self, type_name: &str, fn_name: &str) -> bool {
+        self.inherent_fns
+            .get(type_name)
+            .is_some_and(|fn_names| fn_names.contains(fn_name))
     }
 
     /// # Returns
@@ -196,6 +210,22 @@ impl<'ast> FileIndex<'ast> {
         });
     }
 
+    /// Records the fns of `item_impl` if it is an inherent impl whose self type is a path.
+    fn add_inherent_fns(&mut self, item_impl: &syn::ItemImpl) {
+        if item_impl.trait_.is_some() {
+            return;
+        }
+        let Some(type_name) = type_last_segment(&item_impl.self_ty) else {
+            return;
+        };
+        let fn_names = self.inherent_fns.entry(type_name).or_default();
+        for impl_item in &item_impl.items {
+            if let syn::ImplItem::Fn(impl_item_fn) = impl_item {
+                fn_names.insert(impl_item_fn.sig.ident.to_string());
+            }
+        }
+    }
+
     /// Records the enum's name, and a conversion for every variant with a `#[from]` field.
     fn add_enum(&mut self, item_enum: &syn::ItemEnum) {
         let target = item_enum.ident.to_string();
@@ -275,6 +305,7 @@ impl<'ast> FileIndex<'ast> {
 impl<'ast> Visit<'ast> for FileIndex<'ast> {
     fn visit_item_impl(&mut self, item_impl: &'ast syn::ItemImpl) {
         self.add_from_impl(item_impl);
+        self.add_inherent_fns(item_impl);
         if let Some((trait_path, _)) = &item_impl.trait_
             && let Some(trait_segment) = trait_path.segments.last()
         {
@@ -655,5 +686,18 @@ mod tests {
             Some(vec![path("InternalError::Creation")])
         );
         assert_eq!(file_index.conversion_variants_into("Undeclared"), None);
+    }
+
+    #[test]
+    fn inherent_fns_are_indexed_by_their_self_type() {
+        let syntax_tree = syn::parse_file(
+            "impl<T> Client<T> { fn submit(&self) {} }\nimpl Submitter for Server { fn \
+             submit(&self) {} }\nfn submit() {}",
+        )
+        .expect("valid file");
+        let file_index = FileIndex::build(&syntax_tree);
+        assert!(file_index.has_inherent_fn("Client", "submit"));
+        assert!(!file_index.has_inherent_fn("Server", "submit"));
+        assert!(!file_index.has_inherent_fn("Client", "cancel"));
     }
 }

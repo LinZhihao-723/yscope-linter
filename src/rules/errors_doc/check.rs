@@ -461,8 +461,9 @@ impl FnCheck<'_, '_> {
     ///
     /// The path is kept in these cases:
     ///
-    /// * It matches a callee whose error leaves a closure or an async block of the body, such as a
-    ///   `?` inside an async block that the body hands to a helper.
+    /// * It matches a nested callee: a callee whose error leaves a closure or an async block of the
+    ///   body, such as a `?` inside an async block that the body hands to a helper, or the callee
+    ///   of a possibly recursive call of a trait impl method.
     /// * The body mentions it and has an opaque source or error, since the mentioned call's error
     ///   may leave the fn through it.
     /// * The body has an opaque source and the file calls it anywhere, since the `Result` that the
@@ -1664,6 +1665,71 @@ mod tests {
         assert_eq!(
             checked(&elsewhere(&["[`io::Error`] if the channel is closed."])),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn same_name_self_calls_in_trait_impls_forward_the_inherent_fn_or_nothing() {
+        let trait_impl = |inherent: &str, bullet: &str, call: &str| {
+            let errors_section = concat!(
+                "    /// # Errors\n",
+                "    ///\n",
+                "    /// Returns an error if:\n",
+            );
+            format!(
+                "{inherent}impl Submitter for Client {{\n{errors_section}{bullet}    fn \
+                 submit(&self) -> Result<(), Error> {{\n        Ok({call}?)\n    }}\n}}\n"
+            )
+        };
+        let inherent = concat!(
+            "impl Client {\n",
+            "    fn submit(&self) -> Result<(), Error> {\n",
+            "        Err(Error::Failed)\n",
+            "    }\n",
+            "}\n",
+        );
+        let bullet = concat!(
+            "    ///\n",
+            "    /// * Forwards [`Client::submit`]'s return values on failure.\n",
+        );
+        for call in [
+            "Self::submit(self)",
+            "Client::submit(self)",
+            "self.submit()",
+        ] {
+            for bullet in [bullet, ""] {
+                assert_eq!(
+                    all_findings(&trait_impl("", bullet, call)),
+                    Vec::<String>::new(),
+                    "`{call}` with bullet `{bullet}`"
+                );
+            }
+            assert_eq!(
+                checked(&trait_impl(inherent, bullet, call)),
+                Vec::<String>::new(),
+                "`{call}`"
+            );
+        }
+        assert_eq!(
+            checked(&trait_impl(inherent, "", "Self::submit(self)")),
+            [
+                "11:30: `submit` forwards errors from `Self::submit`, but `# Errors` does not \
+                 list it; add \"* Forwards [`Self::submit`]'s return values on failure.\""
+            ]
+        );
+        assert_eq!(
+            checked(&trait_impl(inherent, "", "self.submit()")),
+            [
+                "11:25: `submit` forwards errors from `submit`, but `# Errors` does not list it; \
+                 add \"* Forwards [`submit`]'s return values on failure.\""
+            ]
+        );
+        assert_eq!(
+            checked(&trait_impl("", bullet, "Submitter::submit(self)")),
+            [
+                "6:5: \"Forwards [`Client::submit`]\" names a function whose errors `submit` \
+                 never forwards"
+            ]
         );
     }
 }
