@@ -1145,6 +1145,18 @@ The scanner keeps a `nested_scope_depth` counter. Closures, async blocks, `try` 
 bodies of generator macros increment it, since a `?` inside them belongs to their value, not to the
 fn. Nested items aren't entered at all (`visit_item` doesn't recurse).
 
+A closure that a call runs in place (see [Values that leave the fn](#values-that-leave-the-fn)) is
+the exception. When `classify_fallible` classifies the call in a return position,
+`classify_in_place_closure` visits the closure's body a second time, at the call's depth, so its
+`?`, `return` and anyhow-macro sites are the fn's. The walk's own visit of the closure still counts
+it as a nested scope, so the closure's callees are nested callees too, and a closure in any other
+position stays nested. Visiting a body twice records nothing twice that matters: the comparison
+dedups obligations by `ObligationKey`, the facts other than `obligations` are sets,
+`forwarded_sites` is checked before an anyhow macro is recorded, and the bindings are recomputed the
+same way. An in-place closure at the tail of another one in a return position is visited twice per
+visit of the outer one, so the visits grow exponentially with the nesting depth of in-place closures
+in return positions. Real code nests one or two.
+
 `BodyFacts` holds:
 
 * `obligations`: what the section must document, each with its position. They are recorded only at
@@ -1227,14 +1239,17 @@ Positions:
 `visit_local` records `let ident = <init>` bindings, a later one of a name replacing an earlier one:
 
 * A closure (`let to_status = |e| ..;`) keeps two summaries: the errors its body classifies to, for
-  use as a mapper, and the callee of its value, for a call of the closure.
+  use as a mapper, and the callee of its value, for a call of the closure. The callee comes from
+  `callee_of`, which peels the error adaptors (see [Callees](#callees)), so
+  `let create = |d| create_dir_all(d).context(..);` keeps `create_dir_all`.
 * A spawn (`let handle = tokio::spawn(..);`) makes a `?` on the awaited binding an `OpaqueError`
   site, as an awaited spawn is.
 * A query builder keeps the builder's type.
 * An error constructor (`let e = Error::B;`) keeps its errors, so `return Err(e)` returns
   `Error::B`.
 * Any other call or method call (`let result = run().await;`), unless the `let` has an `else`, keeps
-  its callee, so `result` or `result?` in a return position forwards `run`.
+  its callee, so `result` or `result?` in a return position forwards `run`. The callee comes from
+  `callee_of` too, so `let result = run().context(..);` keeps `run`.
 
 A binding stores only these summaries, computed when the `let` is visited, never syntax.
 
@@ -1246,6 +1261,9 @@ An `Err(..)` is a `Direct` obligation only in a return position, where its value
 * Inside any of them: a block's tail, an `if` or `else` branch's tail, a `match` arm, a `select!`
   arm body, and an argument of a value method that may return it (`.map_or(Err(..), ..)`,
   `.unwrap_or_else(|| Err(..))`).
+* The value and the `return` values of a closure that a call in a return position runs in place,
+  such as the closure of `std::thread::scope(..)` (see [Values that leave the
+  fn](#values-that-leave-the-fn)).
 
 So `tx.send(Err(Error::Cancelled))`, `results.push(Err(..))`, `value == Err(..)` and `assert_eq!(r,
 Err(..))` record nothing. The same walk classifies the calls in return positions, so one rule,
@@ -1329,8 +1347,8 @@ parentheses, then takes the first case that applies:
 3. `Err(e)`: as in [Error expressions](#error-expressions). `Ok(..)` and `Some(..)` give nothing.
 4. `.ok_or(e)` and `.ok_or_else(|..| e)`: `Direct` for the errors of the argument or the closure
    body. The receiver is an `Option` and is not forwarded.
-5. `.map_err(f)` on a receiver whose callee is `c`, after peeling the receiver's pass-through
-   adaptors:
+5. `.map_err(f)` on a receiver whose callee is `c`, as `callee_of` finds it after peeling the
+   receiver's adaptors:
    * A conversion mapper (`Into::into`, `From::from`, `X::from`, or a closure whose body is `e`,
      `e.into()` or `X::from(e)`): `Forward(c)`.
    * A mapper that constructs errors (an UpperCamelCase path such as `Error::Wrap`, a closure whose
@@ -1339,9 +1357,9 @@ parentheses, then takes the first case that applies:
    * An unknown mapper: `EitherUnknown { c }` and an `OpaqueError` site.
    * When the receiver has no callee (a variable), the errors become `Direct`, a conversion is an
      `OpaqueSource` site, and an unknown mapper an `OpaqueError` site.
-6. `.context(..)` and `.with_context(..)`: `Either { c, [anyhow::Error] }`. anyhow's `Context` is
-   also implemented for `Option`, so documenting `anyhow::Error` alone is accepted. Without a
-   callee, it is an `OpaqueSource` site.
+6. `.context(..)` and `.with_context(..)`: `Either { c, [anyhow::Error] }`, with the receiver's
+   callee `c` found as in case 5. anyhow's `Context` is also implemented for `Option`, so
+   documenting `anyhow::Error` alone is accepted. Without a callee, it is an `OpaqueSource` site.
 7. `.and_then(f)`: classify the receiver and `f`, since both errors leave the fn.
 8. `.or_else(f)`: classify `f` only, since it replaces the receiver's error.
 9. Pass-through adaptors (`PASS_THROUGH_METHODS`): classify the receiver. A closure argument only
@@ -1366,13 +1384,17 @@ parentheses, then takes the first case that applies:
 14. A macro: a `select!`'s arm bodies and a `try_join!`'s futures are classified at the same site.
     An anyhow macro gives nothing here, since `visit_macro` records it. Any other macro at a `?`
     site is an `OpaqueSource` site.
-15. Any other call or method call: `Forward(callee_of(expr))`, or `HigherOrder` when it has closure
+15. A call that runs a closure in place: the closure called on the spot, `(|..| ..)(..)`, or the
+    only argument of an `IN_PLACE_FNS` fn, such as `std::thread::scope(|scope| ..)`, unless the
+    closure is `async` or its body is an `async` block. The closure's body is visited at the current
+    depth, and its value is classified at the same site.
+16. Any other call or method call: `Forward(callee_of(expr))`, or `HigherOrder` when it has closure
     errors. A call whose callee can't be named, such as `(self.callback)(..)`, is an `OpaqueSource`
     site.
-16. A variable with a call binding: `Forward` of the bound callee. A variable with a spawn binding:
+17. A variable with a call binding: `Forward` of the bound callee. A variable with a spawn binding:
     an `OpaqueError` site.
-17. Any other variable or field: an `OpaqueSource` site.
-18. Anything else: an `OpaqueSource` site at a `?` site, and nothing at a tail site, where `Ok(..)`
+18. Any other variable or field: an `OpaqueSource` site.
+19. Anything else: an `OpaqueSource` site at a `?` site, and nothing at a tail site, where `Ok(..)`
     and literals are the success value.
 
 #### Callees
@@ -1381,9 +1403,15 @@ parentheses, then takes the first case that applies:
 method path with the chain's earlier method calls as alternative spellings, and then adds the
 spellings of callable arguments:
 
+* The error adaptors are peeled first: `.map_err(..)`, `.context(..)`, `.with_context(..)` and the
+  `PASS_THROUGH_METHODS`, after `.await` and parentheses. So a closure binding `|d|
+  create_dir_all(d).context(..)` gives `create_dir_all`, not `context`.
 * `block_on` is transparent. For a call whose path ends in `block_on`, or a method call
   `.block_on(x)`, it gives `callee_of(x)`. So
   `runtime.block_on(provider.provide_credentials()).context(..)?` forwards `provide_credentials`.
+* A call that runs a closure in place (case 15 of [Values that leave the
+  fn](#values-that-leave-the-fn)) is transparent too: it gives the callee of the closure's value. So
+  `let r = std::thread::scope(|_| load()); r?` forwards `load`.
 * A call of a `let` closure binding gives the callee of the closure body's tail. So `fetch(1)?`
   after `let fetch = |key| load(key);` forwards `load`. A closure can't be named in a doc link, so
   the binding itself is never a callee.
@@ -1425,7 +1453,7 @@ with closure errors is a `HigherOrder` obligation instead of a `Forward`. For ex
 `decode_frame(buffer, |reader| ..)` call whose closure returns
 `Err(ProtocolError::MalformedFrame(..).into())` is documented by a `ProtocolError::MalformedFrame`
 bullet or by forwarding `decode_frame`. The calls inside the closure stay the closure's, as `?` in
-closures always does.
+closures does unless the closure runs in place.
 
 #### Conversions
 
@@ -1526,10 +1554,10 @@ tracing's `?id` sigil in `tracing::info!(id = ?id)` doesn't count.
 `known_apis.rs` holds every table of library APIs that the scan recognizes by name:
 `PASS_THROUGH_METHODS`, `SINK_METHODS`, `SINK_FNS`, `ITEM_PRODUCING_METHODS`,
 `ITEM_KEEPING_METHODS`, `RECEIVER_VALUE_METHODS`, `ARGUMENT_VALUE_METHODS`, `BUILDER_FNS`,
-`BUILDER_KEEPING_METHODS`, `SPAWN_FNS`, and the `CALLABLE_TRAITS` of the item walk. Every table is
-matched by the last segment of a fn path or by a method name only, so a same-named fn of any type is
-treated the same way. A new library shape is supported by extending a table, and by a test in
-`body.rs` that shows the shape it covers.
+`BUILDER_KEEPING_METHODS`, `SPAWN_FNS`, `IN_PLACE_FNS`, and the `CALLABLE_TRAITS` of the item walk.
+Every table is matched by the last segment of a fn path or by a method name only, so a same-named fn
+of any type is treated the same way. A new library shape is supported by extending a table, and by a
+test in `body.rs` that shows the shape it covers.
 
 ### Comparison
 
@@ -2147,7 +2175,22 @@ Errors the scan can't attribute:
 * An `Err(..)` bound with `let` and returned later, or the `break Err(..)` value of a loop, isn't in
   a return position, so it records nothing.
 * `?` in closures and async blocks records no obligation, by design. Their callees are nested
-  callees, which only keep `Forwards` bullets.
+  callees, which only keep `Forwards` bullets. A closure that a call in a return position runs in
+  place is the exception.
+* An in-place closure keeps its `?` sites and `return`s nested when its call isn't classified in a
+  return position: when its result is bound and returned later (`let result = (|| ..)(); result?`),
+  and when the call is under `.context(..)`, `.with_context(..)` or `.map_err(..)`, whose case only
+  names the receiver's callee (`(|| ..)().context(..)?`), or in a `match` whose `Err(e)` arm wraps
+  the error. Bindings store no syntax, so the first can't be deferred. Re-visiting the second would
+  record a plain `Forward` where the adaptor makes the error an `Either`.
+* `IN_PLACE_FNS` is matched by last segment, so any fn named `scope` or `block_in_place` whose only
+  argument is a closure runs it in place, `crossbeam::scope` included, whose `Err` is a panic
+  payload. Method forms (`pool.scope(..)`, `span.in_scope(..)`) aren't recognized.
+* A bound closure or call that ends in an error adaptor (`let create = |d|
+  create_dir_all(d).context(..)`) keeps only the receiver's callee, not the adaptor's mapped errors,
+  so a call of it is a `Forward`. A bullet for `anyhow::Error` or for the mapped variants alone
+  doesn't document it, while the same call written in place, `create_dir_all(a).context(..)?`, is
+  an `Either`. Bindings could carry the adaptor's `ObligationKind` instead.
 * A helper that handles the errors of the closure it is given (`retry(|| self.send())`) is
   documented by the closure's callee too.
 * Mappers and constructors defined in another file, or more than one helper level deep, are
@@ -2256,9 +2299,14 @@ Cargo mode:
   leave the fn as they do with `?`. The false positives of tail calls such as
   `OnceCell::get_or_try_init(Self::init)` came from the callable argument, which now documents the
   call.
-* Requiring the calls inside a closure passed to a helper. `?` in a closure belongs to the closure.
-  The closure's built errors document the helper call instead, and its calls keep `Forwards` bullets
-  as nested callees.
+* Requiring the calls inside a closure passed to a helper. `?` in a closure belongs to the closure,
+  unless the helper is one of the `IN_PLACE_FNS`, which return the closure's value. The closure's
+  built errors document the helper call instead, and its calls keep `Forwards` bullets as nested
+  callees.
+* Skipping the nested-scope depth for every in-place closure in the visitor. A closure called on the
+  spot and handled locally, `let r = (|| ..)(); if let Err(e) = r { warn!(..) }`, is the try-block
+  idiom, and its `?` sites would then become obligations of the fn. The second visit is driven by
+  classification in a return position instead.
 * Resolving `From` conversions across files. It needs module resolution, which is a non-goal.
   Same-file conversions cover the false positives seen, and a variant bullet can name the converted
   callee in its condition.
