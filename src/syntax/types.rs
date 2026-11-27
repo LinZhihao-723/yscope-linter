@@ -1,5 +1,4 @@
-//! Looking through `syn` types: to the paths they name, to the `Output` of an `impl Future`, and to
-//! whether a path is a `Result`.
+//! Reading what `syn` types name, as written in the source.
 
 /// # Returns
 ///

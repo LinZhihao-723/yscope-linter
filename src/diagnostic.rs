@@ -379,7 +379,8 @@ mod tests {
 
     #[test]
     fn codes_are_well_formed_and_numbered_without_gaps_but_reserved_ones_in_each_set() {
-        // DOC005 is reserved for the rule of y-scope/yscope-linter#7, which is in progress.
+        // DOC005 is reserved for `returns-doc`, the rule of y-scope/yscope-linter#7: its parked
+        // implementation claimed the code.
         let reserved_codes = [Code::new(CodeSet::Doc, 5)];
         for kind in every_kind() {
             let text = kind.code().to_string();

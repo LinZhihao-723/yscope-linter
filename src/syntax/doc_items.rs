@@ -7,7 +7,8 @@ use crate::syntax::item_lines;
 use crate::syntax::item_lines::ItemLines;
 use crate::syntax::test_code;
 
-/// An item whose docstring may document its generic or fn parameters.
+/// An item whose docstring may document its signature: its generic parameters, fn parameters or
+/// return value.
 ///
 /// # Type Parameters
 ///

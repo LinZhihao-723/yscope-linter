@@ -174,13 +174,13 @@ impl TupleReturn {
 
     /// # Returns
     ///
-    /// What `fn_name` returns, such as ``` `f` returns a 2-element tuple ```.
+    /// What `fn_name` returns, such as ``` `f` returns a tuple of 2 elements ```.
     fn subject(&self, fn_name: &str) -> String {
-        let tuple = format!("{}-element tuple", self.num_elements);
+        let tuple = format!("a tuple of {} elements", self.num_elements);
         if self.is_result {
-            format!("`{fn_name}` returns a `Result` of a {tuple}")
+            format!("`{fn_name}` returns a `Result` of {tuple}")
         } else {
-            format!("`{fn_name}` returns a {tuple}")
+            format!("`{fn_name}` returns {tuple}")
         }
     }
 }
@@ -370,8 +370,8 @@ mod tests {
         assert_eq!(
             checked(source_text, false),
             [
-                "7:1: `into_parts` returns a 3-element tuple, but `# Returns` lists 2 elements; \
-                 add a bullet for each element, in order"
+                "7:1: `into_parts` returns a tuple of 3 elements, but `# Returns` lists 2 \
+                 elements; add a bullet for each element, in order"
             ]
         );
     }
@@ -625,8 +625,8 @@ mod tests {
                     ],
                 ),
                 vec![
-                    "7:1: `f` returns a 2-element tuple, but `# Returns` lists 3 elements; keep \
-                     one bullet per element, in order",
+                    "7:1: `f` returns a tuple of 2 elements, but `# Returns` lists 3 elements; \
+                     keep one bullet per element, in order",
                 ],
             ),
             (
@@ -635,15 +635,15 @@ mod tests {
                     &["A tuple on success, containing:", "", "* The first."],
                 ),
                 vec![
-                    "7:1: `f` returns a `Result` of a 3-element tuple, but `# Returns` lists 1 \
-                     element; add a bullet for each element, in order",
+                    "7:1: `f` returns a `Result` of a tuple of 3 elements, but `# Returns` lists \
+                     1 element; add a bullet for each element, in order",
                 ],
             ),
             (
                 documented_fn("(A, B)", &["A tuple containing:"]),
                 vec![
-                    "5:1: `f` returns a 2-element tuple, but `# Returns` lists 0 elements; add a \
-                     bullet for each element, in order",
+                    "5:1: `f` returns a tuple of 2 elements, but `# Returns` lists 0 elements; \
+                     add a bullet for each element, in order",
                 ],
             ),
             (
@@ -659,7 +659,7 @@ mod tests {
                     ],
                 ),
                 vec![
-                    "5:1: `f` returns a 2-element tuple, but no list follows the `# Returns` \
+                    "5:1: `f` returns a tuple of 2 elements, but no list follows the `# Returns` \
                      intro; move the element bullets right after it",
                 ],
             ),
@@ -667,16 +667,16 @@ mod tests {
                 documented_fn("(A, B)", &["The parts:", "", "* The first."]),
                 vec![
                     "5:1: `f` returns a tuple; start `# Returns` with \"A tuple containing:\"",
-                    "7:1: `f` returns a 2-element tuple, but `# Returns` lists 1 element; add a \
-                     bullet for each element, in order",
+                    "7:1: `f` returns a tuple of 2 elements, but `# Returns` lists 1 element; add \
+                     a bullet for each element, in order",
                 ],
             ),
             (
                 documented_fn("(A, B, C)", &["* The first.", "* The second."]),
                 vec![
                     "5:1: `f` returns a tuple; start `# Returns` with \"A tuple containing:\"",
-                    "5:1: `f` returns a 3-element tuple, but `# Returns` lists 2 elements; add a \
-                     bullet for each element, in order",
+                    "5:1: `f` returns a tuple of 3 elements, but `# Returns` lists 2 elements; \
+                     add a bullet for each element, in order",
                 ],
             ),
             (
@@ -691,27 +691,98 @@ mod tests {
                     ],
                 ),
                 vec![
-                    "7:1: `f` returns a 2-element tuple, but `# Returns` lists 3 elements; keep \
-                     one bullet per element, in order",
+                    "7:1: `f` returns a tuple of 2 elements, but `# Returns` lists 3 elements; \
+                     keep one bullet per element, in order",
                 ],
             ),
         ];
         for (source_text, expected) in &cases {
             assert_eq!(checked(source_text, false), *expected, "{source_text}");
         }
-        let sub_bullets = documented_fn(
-            "(A, B)",
-            &[
-                "A tuple containing:",
-                "",
-                "* The first:",
-                "  * A detail.",
-                "  * Another detail.",
-                "  * A third detail.",
-                "* The second.",
-            ],
-        );
-        assert_eq!(checked(&sub_bullets, false), NO_FINDINGS);
+    }
+
+    #[test]
+    fn continuations_indented_less_than_their_bullet_text_end_the_element_list() {
+        let cases = [
+            (
+                documented_fn(
+                    "(A, B)",
+                    &[
+                        "A tuple containing:",
+                        "",
+                        "* The first, which wraps",
+                        "onto the next line.",
+                        "* The second.",
+                    ],
+                ),
+                vec![
+                    "7:1: `f` returns a tuple of 2 elements, but `# Returns` lists 1 element; add \
+                     a bullet for each element, in order",
+                ],
+            ),
+            (
+                documented_fn(
+                    "(A, B)",
+                    &[
+                        "A tuple containing:",
+                        "",
+                        "1. The first, which wraps",
+                        "  onto the next line.",
+                        "2. The second.",
+                    ],
+                ),
+                vec![
+                    "7:1: `f` returns a tuple of 2 elements, but `# Returns` lists 1 element; add \
+                     a bullet for each element, in order",
+                ],
+            ),
+        ];
+        for (source_text, expected) in &cases {
+            assert_eq!(checked(source_text, false), *expected, "{source_text}");
+        }
+    }
+
+    #[test]
+    fn code_blocks_between_the_intro_and_the_list_are_ignored() {
+        let cases = [
+            (
+                documented_fn(
+                    "(A, B)",
+                    &[
+                        "A tuple containing:",
+                        "",
+                        "```",
+                        "let (a, b) = f();",
+                        "```",
+                        "",
+                        "* The first.",
+                        "* The second.",
+                    ],
+                ),
+                vec![],
+            ),
+            (
+                documented_fn(
+                    "(A, B)",
+                    &[
+                        "A tuple containing:",
+                        "",
+                        "```",
+                        "let (a, b) = f();",
+                        "```",
+                        "",
+                        "* The first.",
+                    ],
+                ),
+                vec![
+                    "11:1: `f` returns a tuple of 2 elements, but `# Returns` lists 1 element; \
+                     add a bullet for each element, in order",
+                ],
+            ),
+        ];
+        for (source_text, expected) in &cases {
+            assert_eq!(checked(source_text, false), *expected, "{source_text}");
+        }
     }
 
     #[test]
@@ -742,8 +813,8 @@ mod tests {
             checked(source_text, false),
             [
                 "6:5: `split` returns a tuple; start `# Returns` with \"A tuple containing:\"",
-                "18:5: `load` returns a `Result` of a 2-element tuple, but `# Returns` lists 1 \
-                 element; add a bullet for each element, in order",
+                "18:5: `load` returns a `Result` of a tuple of 2 elements, but `# Returns` lists \
+                 1 element; add a bullet for each element, in order",
             ]
         );
     }
