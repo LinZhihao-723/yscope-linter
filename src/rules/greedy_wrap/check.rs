@@ -68,6 +68,28 @@ impl Checker {
     }
 }
 
+/// Applies the fit test of the rule to `line` and `next_line` as two lines of one prose paragraph
+/// filled to `width` columns, so a code span or a link that fits on a line alone moves as a whole.
+///
+/// # Returns
+///
+/// Whether `line` is full: it leaves no room for the leading tokens of `next_line`.
+pub fn is_full(line: &CommentLine, next_line: &CommentLine, width: Width) -> bool {
+    let lines = [
+        ParagraphLine::new(line, width),
+        ParagraphLine::new(next_line, width),
+    ];
+    let paragraph_text = ParagraphText::new(&lines.each_ref().map(|line| line.text));
+    UnderfilledLine::find(
+        &lines,
+        &paragraph_text.tokens(),
+        1,
+        Preceding::Paragraph,
+        width,
+    )
+    .is_none()
+}
+
 /// A violation in one prose paragraph.
 ///
 /// # Type Parameters
@@ -409,6 +431,7 @@ mod tests {
         Checker::new(width).check(&FileContext::new(
             Path::new("a.rs"),
             source_text,
+            width,
             &test_module_cache,
         ))
     }

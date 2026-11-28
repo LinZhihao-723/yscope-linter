@@ -350,8 +350,9 @@ These are never checked:
 * Block comments, `/* */`, and block doc comments, `/** */` and `/*! */`.
 * Text that looks like a comment inside a string, raw string or char literal, or inside a block
   comment.
-* Suppression comments, such as `// yscope-linter: allow(comment-greedy-wrap): ...`. They are not
-  part of any paragraph. See [Suppression comments](../suppression.md).
+* Suppression comments, such as `// yscope-linter: allow(comment-greedy-wrap): ...`, and the lines
+  that their reasons continue on. They are not part of any paragraph. See
+  [Suppression comments](../suppression.md).
 
 ```rust
 /* A block comment that ends
@@ -377,7 +378,7 @@ Two lines in different blocks are never in the same paragraph. A block ends at a
 
 * A line that isn't a comment, including an empty line.
 * A line with a trailing comment.
-* A suppression comment.
+* A suppression comment, or a line that its reason continues on.
 * A change of marker: `//`, `///`, `//!` and `////` are four different markers.
 * A change of the marker's column.
 

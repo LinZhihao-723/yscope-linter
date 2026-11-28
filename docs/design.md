@@ -150,11 +150,12 @@ Per-file core:
 Rule-agnostic helpers:
 
 * `src/syntax/`: helpers over `syn` trees. `span.rs` converts span locations to positions,
-  `item_lines.rs` finds the lines of every item or of one item, `symbol_path.rs` normalizes paths,
-  `types.rs` looks through parenthesized types, `test_code.rs` recognizes test attributes and
-  out-of-line test modules, `visibility.rs` classifies visibilities into the ordering groups,
-  `crate_names.rs` tells crate-local paths from foreign ones, and `doc_items.rs` walks the items
-  whose docstrings document their signatures.
+  `item_lines.rs` finds the lines of every item or of one item or statement, `statement_lines.rs`
+  finds the lines of every statement, `symbol_path.rs` normalizes paths, `types.rs` looks through
+  parenthesized types, `test_code.rs` recognizes test attributes and out-of-line test modules,
+  `visibility.rs` classifies visibilities into the ordering groups, `crate_names.rs` tells
+  crate-local paths from foreign ones, and `doc_items.rs` walks the items whose docstrings document
+  their signatures.
 * `src/doc/`: helpers over docstrings. `doc_lines.rs` turns `#[doc]` attributes into positioned
   lines, `links.rs` finds code spans, links and link reference definitions, `section.rs` selects a
   `# Title` section and groups its lines, and `param_section.rs` parses and compares the sections
@@ -247,9 +248,9 @@ package, as [Cargo mode](#cargo-mode) describes, and passes them to `driver::che
 
 1. `FileContext::new` lexes the file and splits the suppression comments from the other comments.
 2. Each enabled rule checks the file through the context, in `RuleId::ALL` order.
-3. `FileContext::finish` adds the lex failure as a `parse-error`, locates `allow-item` items, drops
-   the diagnostics that suppressions cover, and adds the `unused-suppression` and
-   `invalid-suppression` diagnostics.
+3. `FileContext::finish` adds the lex failure as a `parse-error`, locates `allow-item` items,
+   extends own-line `allow`s through the statements they precede, drops the diagnostics that
+   suppressions cover, and adds the `unused-suppression` and `invalid-suppression` diagnostics.
 4. If the file has a `LineFilter::Ranges`, the diagnostics whose anchor span misses it are dropped.
 
 `main` prints the diagnostics to stdout, then a one-line summary to stderr with the numbers of
@@ -381,7 +382,8 @@ The path mode never reads `Cargo.toml`. Both command lines turn their shared `Se
 `FileContext` is what the rules see of one file. It is built once per file and shared by every
 enabled rule:
 
-* `comment_lines()`: the lexed comment lines without the suppression candidates.
+* `comment_lines()`: the lexed comment lines without the suppression candidates and the lines that
+  their reasons continue on.
 * `syntax_tree(rule_id)`: the `syn::File`, parsed on the first call and kept in a `OnceCell`.
 * `optional_syntax_tree()`: the same tree for a rule that can do without it. A parse failure records
   nothing, so it never adds a `parse-error`.
@@ -407,9 +409,10 @@ Both records become one meta diagnostic each in `finish`, whatever the number of
 The rules are listed in `RuleId::ALL` order, with `is`/`checks` for one rule. A run with only
 `errors-doc` keeps the messages it had before the other rules existed.
 
-A file is parsed at most once, and not at all when no enabled rule needs the tree and no
-`allow-item` needs its items. So a `comment-greedy-wrap`-only run parses only the files that have an
-`allow-item` or a [move that fills a line to the width](#rustfmt-hint).
+A file is parsed at most once, and not at all when no enabled rule needs the tree, no `allow-item`
+needs its items and no own-line `allow` precedes a line that isn't a comment. So a
+`comment-greedy-wrap`-only run parses only the files that have an `allow-item`, such an `allow` or a
+[move that fills a line to the width](#rustfmt-hint).
 
 After the lex failure, the comment rule and the suppressions work on the comments lexed before it.
 
@@ -752,9 +755,9 @@ A block is a maximal run of own-line comments on consecutive lines with the same
 `num_slashes` and `marker_column` (`CommentLine::continues_block`). Two lines in different blocks
 are never in the same paragraph.
 
-A trailing comment is a block of its own, so it is never checked. Suppression candidates are removed
-from the comment stream before the rule runs, so a suppression comment leaves a gap in the line
-numbers and always ends a block.
+A trailing comment is a block of its own, so it is never checked. Suppression candidates, and the
+lines that the reasons of own-line ones continue on, are removed from the comment stream before the
+rule runs, so a suppression comment leaves a gap in the line numbers and always ends a block.
 
 ### Line kinds
 
@@ -1208,7 +1211,8 @@ messages) first, plus the error type of the value when the expression names it.
 Positions:
 
 * `?` obligations and opaque sites are at the `?` token. A multi-line chain then points at the line
-  with `.await?`, which is also where a trailing suppression goes.
+  with `.await?`, which is where a trailing suppression goes. An own-line suppression above the
+  statement covers it too.
 * `Err(..)` is at the `Err` identifier, and `.ok_or(..)` and `.ok_or_else(..)` at the method name.
 * Tail and `return` forwards are at the callee's last path segment or method name.
 * Macros are at the macro path's first segment.
@@ -1866,13 +1870,25 @@ Every diagnostic has the item's span as its anchor and the item's header as its 
 The suppression forms and their user-facing semantics are in
 [`docs/suppression.md`](suppression.md). This section describes `src/suppression.rs`.
 
-`suppression::parse(comment_lines, header_end)` runs inside `FileContext::new`, before any rule:
+`suppression::parse(comment_lines, header_end, width)` runs inside `FileContext::new`, before any
+rule, with the run's `comment-greedy-wrap` width:
 
 * A comment line is a candidate when it is a plain `//` comment and its trimmed text starts with
   `yscope-linter:`. Doc comments are never candidates, so a suppression can't leak into rustdoc.
-* Candidates are removed from the comment stream that `comment_lines()` returns. The removed line
-  breaks the run of consecutive lines, so a candidate of any form, valid or not, ends a
-  `comment-greedy-wrap` block.
+* `split_candidates` parses each candidate once with `Directive::parse` into a `Candidate`. The
+  reason of an own-line candidate whose directive parses with a reason (`Directive.has_reason`)
+  continues on the following lines for which `is_reason_continuation` holds: the line continues the
+  block (`CommentLine::continues_block`), isn't empty or a candidate, and the line above it, the
+  candidate or the last continuation line, is full before it. `greedy_wrap::is_full` decides that
+  with the rule's own fit test (`UnderfilledLine::find` on the two lines as one paragraph), so the
+  width, the column counting and the code spans and links that move whole are those of
+  `comment-greedy-wrap`, and a reason that rustfmt's `wrap_comments` wraps stays one reason. These
+  lines are taken from the stream, and `Candidate.last_line` is the last of them. A misplaced
+  candidate continues too, since its reason is still a reason. An invalid or reasonless one, or a
+  trailing one, continues on no line. Indentation plays no part.
+* Candidates and their continuation lines are removed from the comment stream that
+  `comment_lines()` returns. The removed lines break the run of consecutive lines, so a candidate of
+  any form, valid or not, ends a `comment-greedy-wrap` block.
 * `Directive::parse` reads the keyword of a `SuppressionKind`, the list of `RuleSelector`s and the
   reason. It expands the selectors to rules, without duplicates, and splits off the deprecated ones.
   An unknown keyword, an unknown or meta selector, or a missing reason (for every form but
@@ -1889,9 +1905,10 @@ The result is `ParsedComments`: the `Suppressions`, the remaining comment lines,
 
 Each valid suppression has a `Scope`:
 
-* `Unit { lines }`, for `allow`. A trailing `allow` covers its own line. An own-line `allow` covers
-  the next unit, which starts at the first following line that isn't an own-line candidate: the
-  whole comment block starting there (`block_last_line`), or else that single line.
+* `Unit { lines, is_statement_unit }`, for `allow`. A trailing `allow` covers its own line. An
+  own-line `allow` covers the next unit, which starts at the first following line that isn't an
+  own-line candidate or one of their continuation lines: the whole comment block starting there
+  (`block_last_line`), or else that single line, with `is_statement_unit` set.
 * `Item { lines }`, for `allow-item`, once located.
 * `Region { start_line, end_line }`, for a matched `allow-start` and `allow-end`. `open_regions`
   opens one region per rule, and `close_regions` closes the open region of each rule it names.
@@ -1917,6 +1934,25 @@ intersects its lines, so one `allow` above a fn, or between its doc and its sign
   covers that item's span. Without one, the suppression is invalid.
 * When the file failed to lex or parse, `reject_items` makes each `allow-item` invalid, with a
   message that says why its item can't be located.
+
+A statement unit is extended in `FileContext::finish` too, after the `allow-item`s:
+
+* When some unit has `is_statement_unit` (`has_statement_units`), `finish` gets the tree with
+  `optional_syntax_tree`, so a parse failure records no skipped rule and adds no `parse-error`.
+* `syntax/statement_lines.rs` collects every `syn::Stmt` but `Stmt::Item`, nested ones included,
+  with `item_lines::of`, so each has a span and a header from its first attribute through the line
+  where the statement itself starts.
+* `statement_lines::collect` also records each statement's start, the position of its first token.
+* `extend_statements` takes the statements whose header holds the unit's line and that start at or
+  before the line's first token in the source text, and the unit then runs through the latest of
+  their last lines. An item in a body, a line inside a statement, a statement that starts after
+  other code on the line, or a statement in a macro body that `syn` doesn't parse, has no such
+  statement, so its unit stays one line.
+* When the file failed to lex or parse, every unit stays one line, with no diagnostic.
+
+Since `covers` checks the fn header of a diagnostic against a `Unit`'s lines, an extended unit also
+covers every finding whose rule records a header (`errors-doc`, `symbol-order`, `type-params-doc`
+and `trait-params-doc`) of an item nested in the statement.
 
 `Suppressions::apply` drops every diagnostic that some suppression covers, marking each covering
 suppression as used. Then it adds an `unused-suppression` for every unused suppression whose rules

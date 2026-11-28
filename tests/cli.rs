@@ -659,3 +659,46 @@ fn rule_flag_and_suppressions_accept_codes_and_sets() {
         ["DOC003 type-params-doc", "DOC003 type-params-doc"]
     );
 }
+
+#[test]
+fn width_flag_decides_where_a_suppression_reason_ends() {
+    let directory = test_directory("width_flag_decides_where_a_suppression_reason_ends");
+    write_file(
+        &directory,
+        "a.rs",
+        concat!(
+            "/// Runs the job.\n",
+            "///\n",
+            "/// # Errors\n",
+            "///\n",
+            "/// Returns an error if:\n",
+            "///\n",
+            "/// * Forwards [`Store::insert`]'s return values on failure.\n",
+            "fn run(&self, job: Job) -> Result<(), Error> {\n",
+            "    self.store.insert(&job)?;\n",
+            "    // yscope-linter: allow(errors-doc): the audit log documents its own errors, and \
+             the caller\n",
+            "    // reports them to the user\n",
+            "    self.audit\n",
+            "        .record(&job)\n",
+            "        .await?;\n",
+            "    Ok(())\n",
+            "}\n",
+        ),
+    );
+    let output = run(&directory, &["a.rs"], "");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_lines(&output), Vec::<String>::new());
+
+    let output = run(&directory, &["--width", "120", "a.rs"], "");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stdout_lines(&output),
+        [
+            "a.rs:10:5: LNT003 unused-suppression: this suppression of errors-doc covers no \
+             finding on line 11; remove it",
+            "a.rs:14:15: DOC002 errors-doc: `run` forwards errors from `record`, but `# Errors` \
+             does not list it; add \"* Forwards [`record`]'s return values on failure.\""
+        ]
+    );
+}

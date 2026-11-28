@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::config::RuleSet;
+use crate::config::Width;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::DiagnosticKind;
 use crate::diagnostic::Position;
@@ -18,6 +19,7 @@ use crate::suppression::ParsedComments;
 use crate::syntax::item_lines;
 use crate::syntax::item_lines::ItemLines;
 use crate::syntax::span;
+use crate::syntax::statement_lines;
 use crate::syntax::test_code::TestModuleCache;
 use crate::syntax::test_code::TestModuleVerdict;
 
@@ -45,8 +47,9 @@ pub struct FileContext<'source> {
 impl<'source> FileContext<'source> {
     /// Factory function.
     ///
-    /// Lexes the file and splits its suppression comments from its other comments. A lex failure
-    /// keeps the comments before it.
+    /// Lexes the file and splits its suppression comments from its other comments, with the lines
+    /// that their reasons continue on at the run's `width`. A lex failure keeps the comments before
+    /// it.
     ///
     /// # Returns
     ///
@@ -55,6 +58,7 @@ impl<'source> FileContext<'source> {
     pub fn new(
         path: &'source Path,
         source_text: &'source str,
+        width: Width,
         test_module_cache: &'source TestModuleCache,
     ) -> Self {
         let lexed = lexer::lex(source_text);
@@ -62,7 +66,7 @@ impl<'source> FileContext<'source> {
             path,
             source_text,
             lex_error: lexed.error,
-            parsed_comments: suppression::parse(lexed.comment_lines, lexed.header_end),
+            parsed_comments: suppression::parse(lexed.comment_lines, lexed.header_end, width),
             syntax_tree: OnceCell::new(),
             test_module_cache,
             test_module_verdict: OnceCell::new(),
@@ -73,7 +77,8 @@ impl<'source> FileContext<'source> {
 
     /// # Returns
     ///
-    /// The comment lines that are not suppression comments, in source order.
+    /// The comment lines that are neither suppression comments nor lines that their reasons
+    /// continue on, in source order.
     pub fn comment_lines(&self) -> &[CommentLine] {
         &self.parsed_comments.comment_lines
     }
@@ -138,6 +143,9 @@ impl<'source> FileContext<'source> {
     /// * The items of `allow-item` suppressions are located in the syntax tree, which is parsed
     ///   only if the file has such a suppression. If the file fails to lex or parse, each of them
     ///   is an `invalid-suppression` diagnostic.
+    /// * An own-line `allow` above a statement covers it through its end. The syntax tree is parsed
+    ///   only if the file has an own-line `allow` above a line that isn't a comment. If the file
+    ///   fails to lex or parse, each such `allow` covers one line, with no diagnostic.
     /// * Suppressions drop the diagnostics they cover, and unused suppressions are reported, as
     ///   [`suppression::Suppressions::apply`] decides with `rule_set`.
     /// * Each malformed or misplaced suppression is an `invalid-suppression` diagnostic.
@@ -152,12 +160,19 @@ impl<'source> FileContext<'source> {
             .suppressions
             .has_unlocated_items()
             .then(|| self.item_lines());
+        let statement_lines = self
+            .parsed_comments
+            .suppressions
+            .has_statement_units()
+            .then(|| self.optional_syntax_tree().map(statement_lines::collect))
+            .flatten();
         let meta_diagnostics: Vec<Diagnostic> = self
             .parse_error_diagnostic()
             .into_iter()
             .chain(self.test_module_diagnostic())
             .collect();
         let Self {
+            source_text,
             lex_error,
             mut parsed_comments,
             ..
@@ -171,6 +186,11 @@ impl<'source> FileContext<'source> {
                 invalid_suppressions.extend(parsed_comments.suppressions.reject_items(&reason));
             }
             None => {}
+        }
+        if let Some(statement_lines) = statement_lines {
+            parsed_comments
+                .suppressions
+                .extend_statements(&statement_lines, source_text);
         }
         let lex_diagnostic = lex_error.map(|lex_error| {
             Diagnostic::new(
@@ -308,17 +328,22 @@ mod tests {
 
     fn finished(source_text: &str) -> Vec<(DiagnosticKind, usize, String)> {
         let test_module_cache = TestModuleCache::default();
-        FileContext::new(Path::new("a.rs"), source_text, &test_module_cache)
-            .finish(Vec::new(), &RuleSet::all())
-            .iter()
-            .map(|diagnostic| {
-                (
-                    diagnostic.kind(),
-                    diagnostic.position().line,
-                    diagnostic.message().to_owned(),
-                )
-            })
-            .collect()
+        FileContext::new(
+            Path::new("a.rs"),
+            source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        )
+        .finish(Vec::new(), &RuleSet::all())
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.kind(),
+                diagnostic.position().line,
+                diagnostic.message().to_owned(),
+            )
+        })
+        .collect()
     }
 
     #[test]
@@ -350,7 +375,12 @@ mod tests {
     #[test]
     fn syn_failure_is_one_parse_error_that_names_every_skipped_rule() {
         let test_module_cache = TestModuleCache::default();
-        let context = FileContext::new(Path::new("a.rs"), "fn f( {}\n", &test_module_cache);
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            "fn f( {}\n",
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         for rule_id in [
             RuleId::TypeParamsDoc,
             RuleId::ErrorsDoc,
@@ -371,7 +401,12 @@ mod tests {
             ]
         );
 
-        let context = FileContext::new(Path::new("a.rs"), "fn f( {}\n", &test_module_cache);
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            "fn f( {}\n",
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         assert!(context.syntax_tree(RuleId::SymbolOrder).is_none());
         assert_eq!(
             context.finish(Vec::new(), &RuleSet::all())[0].message(),
@@ -385,12 +420,76 @@ mod tests {
     fn allow_item_locates_its_item_in_the_lazily_parsed_tree() {
         let source_text = "// yscope-linter: allow-item(errors-doc): reason\nfn f() {}\n";
         let test_module_cache = TestModuleCache::default();
-        let context = FileContext::new(Path::new("a.rs"), source_text, &test_module_cache);
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        );
         let finding = Diagnostic::new(
             RuleId::ErrorsDoc.into(),
             Position { line: 2, column: 1 },
             "finding".to_owned(),
         );
         assert_eq!(context.finish(vec![finding], &RuleSet::all()), []);
+    }
+
+    #[test]
+    fn allow_above_a_statement_is_extended_in_the_lazily_parsed_tree() {
+        let source_text =
+            "fn f() {\n    // yscope-linter: allow(errors-doc): reason\n    a\n        .b()?;\n}\n";
+        let finding = Diagnostic::new(
+            RuleId::ErrorsDoc.into(),
+            Position {
+                line: 4,
+                column: 13,
+            },
+            "finding".to_owned(),
+        );
+        let test_module_cache = TestModuleCache::default();
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        );
+        assert_eq!(context.finish(vec![finding.clone()], &RuleSet::all()), []);
+
+        let source_text = format!("{source_text}\"open\n");
+        let context = FileContext::new(
+            Path::new("a.rs"),
+            &source_text,
+            Width::DEFAULT,
+            &test_module_cache,
+        );
+        let diagnostics: Vec<_> = context
+            .finish(vec![finding], &RuleSet::all())
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.kind(),
+                    diagnostic.position().line,
+                    diagnostic.message().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            diagnostics,
+            [
+                (
+                    DiagnosticKind::ParseError,
+                    6,
+                    "unterminated string literal; only the comments before it are checked"
+                        .to_owned()
+                ),
+                (RuleId::ErrorsDoc.into(), 4, "finding".to_owned()),
+                (
+                    DiagnosticKind::UnusedSuppression,
+                    2,
+                    "this suppression of errors-doc covers no finding on line 3; remove it"
+                        .to_owned()
+                ),
+            ]
+        );
     }
 }

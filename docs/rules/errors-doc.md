@@ -1221,5 +1221,6 @@ fn run(&self) -> Result<(), Error> {
 ```
 
 An own-line `allow` above the fn's docstring, or anywhere from its first attribute or doc line
-through its `fn` line, covers every finding of the fn. A trailing `allow` covers only the findings
-on its line, such as one `?`. See [Suppression comments](../suppression.md).
+through its `fn` line, covers every finding of the fn. An own-line `allow` above a statement in the
+body covers every finding of the statement, such as the `?` at the end of a multi-line chain. A
+trailing `allow` covers the findings on its line. See [Suppression comments](../suppression.md).
