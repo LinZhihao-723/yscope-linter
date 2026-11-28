@@ -776,6 +776,10 @@ in place, unless the closure is `async` or its body is an `async` block:
   `std::thread::scope(|scope| ..)` and `tokio::task::block_in_place(|| ..)`.
 * A closure called on the spot, `(|| ..)()`.
 
+The call has no errors of its own, so a
+``Forwards [`std::thread::scope`]'s return values on failure.`` bullet is reported as stale, and
+the closure's callees are asked for instead.
+
 The `?` sites of closures passed to `std::thread::spawn`, `tokio::spawn`, `scope.spawn(..)` and
 other functions that run them elsewhere stay the closure's. So do those of a closure called on the
 spot whose result the fn handles, as the `cleanup` below:
@@ -1315,6 +1319,13 @@ The rule reads syntax, not types. These cases are known to be wrong or incomplet
   such as `let create = |d| create_dir_all(d).context(".."); create(a)?`, needs a Forwards bullet
   for the receiver's callee. A bullet for `anyhow::Error`, or for the variants the mapper builds,
   doesn't document it.
+* A call of a closure bound with `let` forwards only the callee of the closure's value. The `?`
+  sites, `return Err(..)`s and anyhow macros of its body aren't required, and a call whose result
+  the fn handles adds nothing: only calls in a return position do. So after
+  `let attempt = |x| { load(x)?; store(x) };`, `if attempt(1).is_err() { .. }` requires nothing,
+  and `attempt(2)?` requires `store` only.
+  [y-scope/yscope-linter#22](https://github.com/y-scope/yscope-linter/issues/22) tracks checking the
+  body at those calls, as for in-place closures.
 * A closure that runs in place keeps its `?` sites and `return`s to itself, and their errors aren't
   required, when its call isn't itself in a return position. Examples:
   * Its result is bound with `let` and returned later: `let result = (|| ..)(); result?`.

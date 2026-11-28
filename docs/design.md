@@ -1423,7 +1423,9 @@ spellings of callable arguments:
   `runtime.block_on(provider.provide_credentials()).context(..)?` forwards `provide_credentials`.
 * A call that runs a closure in place (case 15 of [Values that leave the
   fn](#values-that-leave-the-fn)) is transparent too: it gives the callee of the closure's value. So
-  `let r = std::thread::scope(|_| load()); r?` forwards `load`.
+  `let r = std::thread::scope(|_| load()); r?` forwards `load`. The in-place fn itself is never a
+  callee, so a `Forwards` bullet for `std::thread::scope` is stale, and the closure's callees are
+  asked for instead.
 * A call of a `let` closure binding gives the callee of the closure body's tail. So `fetch(1)?`
   after `let fetch = |key| load(key);` forwards `load`. A closure can't be named in a doc link, so
   the binding itself is never a callee.
@@ -2221,6 +2223,12 @@ Errors the scan can't attribute:
   so a call of it is a `Forward`. A bullet for `anyhow::Error` or for the mapped variants alone
   doesn't document it, while the same call written in place, `create_dir_all(a).context(..)?`, is
   an `Either`. Bindings could carry the adaptor's `ObligationKind` instead.
+* A call of a `let` closure binding forwards only the `tail_callee` of the closure's body, since the
+  binding stores no syntax. The body's `?` sites, `return Err(..)`s and anyhow macros stay nested,
+  and a call whose result the fn handles records nothing, as any call outside a return position
+  does. [y-scope/yscope-linter#22](https://github.com/y-scope/yscope-linter/issues/22) tracks
+  visiting the body at the site of each call in a return position, as `classify_in_place_closure`
+  does.
 * A helper that handles the errors of the closure it is given (`retry(|| self.send())`) is
   documented by the closure's callee too.
 * Mappers and constructors defined in another file, or more than one helper level deep, are
