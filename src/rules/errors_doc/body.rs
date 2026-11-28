@@ -4015,4 +4015,22 @@ mod tests {
             assert_eq!(obligations_of(&trait_impl(body)), [obligation], "`{body}`");
         }
     }
+
+    #[test]
+    fn let_closures_contribute_only_from_calls_in_a_return_position() {
+        let handled_closure = [
+            "let inner = |x: u32| -> anyhow::Result<()> { load(x)?; store(x) };",
+            "if inner(1).is_err() { tracing::warn!(\"first attempt failed\"); }",
+        ];
+        let source_text =
+            |tail: &[&str]| subject(&[&handled_closure[..], tail].concat().join("\n"));
+        assert_eq!(
+            obligations_of(&source_text(&["inner(2)?;", "other()"])),
+            ["forward store", "forward other"]
+        );
+        assert_eq!(
+            obligations_of(&source_text(&["other()"])),
+            ["forward other"]
+        );
+    }
 }

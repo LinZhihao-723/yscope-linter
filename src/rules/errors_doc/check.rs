@@ -1939,4 +1939,43 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn let_closures_contribute_only_from_calls_in_a_return_position() {
+        let handled_closure = concat!(
+            "    let inner = |x: u32| -> anyhow::Result<()> {\n",
+            "        load(x)?;\n",
+            "        store(x)\n",
+            "    };\n",
+            "    if inner(1).is_err() {\n",
+            "        tracing::warn!(\"first attempt failed\");\n",
+            "    }\n",
+        );
+        let store_bullet = "Forwards [`store`]'s return values on failure.";
+        let other_bullet = "Forwards [`other`]'s return values on failure.";
+        assert_eq!(
+            checked(&subject(
+                &[store_bullet],
+                &format!("{handled_closure}    inner(2)?;\n    Ok(())")
+            )),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            checked(&subject(
+                &[other_bullet],
+                &format!("{handled_closure}    inner(2)?;\n    other()")
+            )),
+            [
+                "16:13: `subject` forwards errors from `store`, but `# Errors` does not list it; \
+                 add \"* Forwards [`store`]'s return values on failure.\""
+            ]
+        );
+        assert_eq!(
+            checked(&subject(
+                &[other_bullet],
+                &format!("{handled_closure}    other()")
+            )),
+            Vec::<String>::new()
+        );
+    }
 }
