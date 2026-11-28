@@ -1868,4 +1868,75 @@ mod tests {
         );
         assert_eq!(checked(source_text), Vec::<String>::new());
     }
+
+    #[test]
+    fn same_name_self_calls_in_trait_impls_compose_with_error_adaptors_and_in_place_closures() {
+        let trait_impl = |bullet: &str, call: &str| {
+            let head = concat!(
+                "impl Submitter for Client {\n",
+                "    /// # Errors\n",
+                "    ///\n",
+                "    /// Returns an error if:\n",
+            );
+            let signature = "    fn submit(&self) -> Result<(), Error> {\n";
+            format!("{head}{bullet}{signature}        Ok({call}?)\n    }}\n}}\n")
+        };
+        let bullet_of = |text: &str| format!("    ///\n    /// * {text}\n");
+        let forwards_bullet =
+            |path: &str| bullet_of(&format!("Forwards [`{path}`]'s return values on failure."));
+        for call in [
+            "self.submit().map_err(Into::into)",
+            "std::thread::scope(|_| Self::submit(self))",
+            "(|| self.submit())()",
+        ] {
+            for optional_bullet in [
+                forwards_bullet("Client::submit"),
+                forwards_bullet("Self::submit"),
+                String::new(),
+            ] {
+                assert_eq!(
+                    all_findings(&trait_impl(&optional_bullet, call)),
+                    Vec::<String>::new(),
+                    "`{call}` with bullet `{optional_bullet}`"
+                );
+            }
+            assert_eq!(
+                checked(&trait_impl(&forwards_bullet("Other::submit"), call)),
+                [
+                    "6:5: \"Forwards [`Other::submit`]\" names a function whose errors `submit` \
+                     never forwards"
+                ],
+                "`{call}`"
+            );
+        }
+        for (call, error, column) in [
+            ("Self::submit(self).context(\"c\")", "anyhow::Error", 43),
+            (
+                "std::thread::scope(|_| self.submit().map_err(Error::Wrap))",
+                "Error::Wrap",
+                70,
+            ),
+        ] {
+            for bullet in [
+                forwards_bullet("Client::submit"),
+                forwards_bullet("Self::submit"),
+                bullet_of(&format!("[`{error}`] if submitting fails.")),
+            ] {
+                assert_eq!(
+                    checked(&trait_impl(&bullet, call)),
+                    Vec::<String>::new(),
+                    "`{call}` with bullet `{bullet}`"
+                );
+            }
+            assert_eq!(
+                checked(&trait_impl("", call)),
+                [format!(
+                    "6:{column}: `submit` maps errors from `Self::submit` into [`{error}`], but \
+                     `# Errors` documents neither; add \"* Forwards [`Self::submit`]'s return \
+                     values on failure.\" or \"* [`{error}`] if ...\""
+                )],
+                "`{call}`"
+            );
+        }
+    }
 }

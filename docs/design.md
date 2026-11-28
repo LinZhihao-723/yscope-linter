@@ -1446,6 +1446,14 @@ of three outcomes, which `BodyScanner::self_call_recursion` decides as a `Recurs
   isn't reported. A `self.name(..)` call's nested callee is `Self::name`, since an unqualified one
   would keep the bullet of any fn whose last segment is `name`.
 
+The `Recursion` is part of the `Callee`, so `callee_of`'s adaptor peeling and in-place transparency
+keep it: a possibly recursive call under `.inspect_err(..)`, in a call or closure binding, or as the
+value of an in-place closure records its nested callee too. Cases 5 and 6 of [Values that leave the
+fn](#values-that-leave-the-fn) build their `Either` and `EitherUnknown` obligations from the
+callee's spellings without checking the recursion. The mapped errors leave the fn either way, so a
+bullet for them is right even for recursion, and in the possible case the callee, spelled
+`Self::name`, documents the call when it forwards the inherent fn.
+
 #### Higher-order calls
 
 A call or method call whose arguments include callables gets their callees as its first spellings,

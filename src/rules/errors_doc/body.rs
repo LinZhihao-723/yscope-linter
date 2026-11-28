@@ -3966,4 +3966,53 @@ mod tests {
             assert!(facts.nested_callees.contains(&path), "`{nested_callee}`");
         }
     }
+
+    #[test]
+    fn possibly_recursive_self_calls_compose_with_error_adaptors_and_in_place_closures() {
+        let trait_impl = |body: &str| {
+            format!(
+                "impl Trait for S {{\n    fn subject(&self) -> Result<(), Error> {{\n{body}\n    \
+                 }}\n}}\n"
+            )
+        };
+        let self_subject = SymbolPath::parse("Self::subject").expect("valid path");
+        for body in [
+            "self.subject().map_err(Into::into)?;\nOk(())",
+            "Self::subject(self).inspect_err(report)",
+            "let r = self.subject().context(\"c\");\nr?;\nOk(())",
+            "let f = || Self::subject(self).with_context(|| \"c\");\nf()",
+            "std::thread::scope(|_| self.subject())",
+            "tokio::task::block_in_place(|| { Self::subject(self)?; Ok(()) })",
+            "let r = std::thread::scope(|_| Self::subject(self));\nr",
+            "(|| self.subject())()?;\nOk(())",
+        ] {
+            let source_text = trait_impl(body);
+            assert_eq!(
+                obligations_of(&source_text),
+                Vec::<String>::new(),
+                "`{body}`"
+            );
+            assert_eq!(
+                facts_of(&source_text).nested_callees,
+                HashSet::from([self_subject.clone()]),
+                "`{body}`"
+            );
+        }
+        for (body, obligation) in [
+            (
+                "Self::subject(self).context(\"c\")",
+                "either Self::subject anyhow::Error",
+            ),
+            (
+                "self.subject().map_err(Error::Wrap)",
+                "either Self::subject Error::Wrap",
+            ),
+            (
+                "std::thread::scope(|_| self.subject().with_context(|| \"c\"))",
+                "either Self::subject anyhow::Error",
+            ),
+        ] {
+            assert_eq!(obligations_of(&trait_impl(body)), [obligation], "`{body}`");
+        }
+    }
 }

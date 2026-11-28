@@ -930,6 +930,12 @@ example.rs:17:15: DOC002 errors-doc: `submit` forwards errors from `Self::submit
 Without the inherent impl of `Client` in the file, the fn passes, with or without a bullet for
 `Client::submit`.
 
+The same holds for the call in a closure that runs in place, such as
+`std::thread::scope(|_| Self::submit(self))`, and under an adaptor that passes the error on, such as
+`.map_err(Into::into)`. Under `.context(..)`, `.with_context(..)` or a `.map_err(..)` that builds
+errors, the mapped errors leave the fn whether or not the call is recursion. So the fn needs a bullet
+for them or the Forwards bullet, as in [Mapped errors](#mapped-errors).
+
 ## How calls and errors are matched to bullets
 
 Each side is reduced to a path of identifiers before matching:
