@@ -40,6 +40,11 @@ pub struct FnItem<'ast> {
     /// it.
     pub is_associated: bool,
 
+    /// The last segment of the self type of the trait impl the fn is a method of, or [`None`]
+    /// outside a trait impl, for a self type that isn't a path, or for a self type that is a type
+    /// parameter of the impl.
+    pub trait_impl_self_type: Option<String>,
+
     /// The second generic argument of the returned `Result`, such as `CacheError` in
     /// `Result<Vec<Publication>, CacheError>`, or `anyhow::Error` for `anyhow::Result`.
     pub own_error_type: Option<SymbolPath>,
@@ -79,6 +84,7 @@ struct ItemContext {
     self_names: Vec<String>,
     generic_params: Vec<String>,
     is_associated: bool,
+    trait_impl_self_type: Option<String>,
 }
 
 /// The `syn` visitor that collects [`FnItem`]s.
@@ -177,6 +183,7 @@ impl<'ast> ItemWalker<'ast> {
             callable_params,
             scope: SymbolScope::new(context.self_names, generic_params),
             is_associated: context.is_associated,
+            trait_impl_self_type: context.trait_impl_self_type,
             own_error_type: own_error_type(result_path),
             anchor: LineSpan::new(first_line, last_line).expect("a fn ends after it starts"),
             header: LineSpan::new(first_line, fn_line).expect("a fn's attributes precede it"),
@@ -209,10 +216,17 @@ impl<'ast> Visit<'ast> for ItemWalker<'ast> {
         {
             self_names.push(trait_segment.ident.to_string());
         }
+        let generic_params = type_param_names(&item_impl.generics);
+        let trait_impl_self_type = item_impl
+            .trait_
+            .as_ref()
+            .and_then(|_| type_last_segment(&item_impl.self_ty))
+            .filter(|self_type| !generic_params.contains(self_type));
         let context = ItemContext {
             self_names,
-            generic_params: type_param_names(&item_impl.generics),
+            generic_params,
             is_associated: true,
+            trait_impl_self_type,
         };
         self.with_context(context, |item_walker| {
             syn::visit::visit_item_impl(item_walker, item_impl);
@@ -227,6 +241,7 @@ impl<'ast> Visit<'ast> for ItemWalker<'ast> {
             self_names: vec![item_trait.ident.to_string()],
             generic_params: type_param_names(&item_trait.generics),
             is_associated: true,
+            trait_impl_self_type: None,
         };
         self.with_context(context, |item_walker| {
             syn::visit::visit_item_trait(item_walker, item_trait);
@@ -577,6 +592,24 @@ mod tests {
         assert_eq!(
             fn_items[0].param_names,
             ["a", "b", "c", "d", "e", "f", "g", "h"]
+        );
+    }
+
+    #[test]
+    fn trait_impl_self_types_are_recorded_for_trait_impl_methods_only() {
+        let source_text = "impl<T> Trait for Server<T> { fn a(&self) -> Result<(), E> { Ok(()) } \
+                           }\nimpl Server { fn b(&self) -> Result<(), E> { Ok(()) } }\ntrait \
+                           Trait { fn c(&self) -> Result<(), E> { Ok(()) } }\nimpl Trait for \
+                           &Server { fn d(&self) -> Result<(), E> { Ok(()) } }\nimpl<T> Trait for \
+                           T { fn e(&self) -> Result<(), E> { Ok(()) } }";
+        let syntax_tree = syn::parse_file(source_text).expect("valid file");
+        let self_types: Vec<Option<String>> = collect(&syntax_tree, false)
+            .into_iter()
+            .map(|fn_item| fn_item.trait_impl_self_type)
+            .collect();
+        assert_eq!(
+            self_types,
+            [Some("Server".to_owned()), None, None, None, None]
         );
     }
 }

@@ -44,7 +44,8 @@ pub struct BodyFacts {
     pub conversion_targets: HashSet<String>,
 
     /// The callees whose errors leave a closure or an async block of the body, which would be
-    /// obligations if they left the fn.
+    /// obligations if they left the fn, and the callees of possibly recursive calls, which a trait
+    /// impl method may forward.
     pub nested_callees: HashSet<SymbolPath>,
 }
 
@@ -316,12 +317,26 @@ struct Callee {
     /// The position of the callee's last path segment or method name.
     position: Position,
 
-    /// Whether the call is a recursive call of the scanned fn.
-    is_recursive: bool,
+    /// How certainly the call calls the scanned fn.
+    recursion: Recursion,
 
     /// The errors that the closures passed to the call build and return. They leave the fn through
     /// the call.
     closure_error_set: ErrorSet,
+}
+
+/// How certainly a call calls the scanned fn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recursion {
+    /// The call calls another fn.
+    No,
+
+    /// The call calls the scanned fn, so it forwards nothing.
+    Certain,
+
+    /// The call may call the scanned fn or an inherent fn of the same name that another file
+    /// declares, so its callee is a nested callee.
+    Possible,
 }
 
 /// What the scan knows about a closure bound with `let name = |..| ..;`.
@@ -430,14 +445,22 @@ impl<'ast> BodyScanner<'_, 'ast> {
         }
     }
 
-    /// Records the obligation of a call to `callee` whose error leaves the fn at `site`, unless the
-    /// call is recursive:
+    /// Records the obligation of a call to `callee` whose error leaves the fn at `site`:
     ///
+    /// * A recursive call records nothing.
+    /// * A possibly recursive call records only its callee, as a nested callee.
     /// * A call that passes closures building errors is a `HigherOrder` obligation.
     /// * Any other call is a `Forward` obligation.
     fn record_forward(&mut self, callee: Callee, site: Site) {
-        if callee.is_recursive {
-            return;
+        match callee.recursion {
+            Recursion::No => {}
+            Recursion::Certain => return,
+            Recursion::Possible => {
+                self.facts
+                    .nested_callees
+                    .extend(callee.spellings.paths().iter().cloned());
+                return;
+            }
         }
         let position = site.position_or(callee.position);
         let ErrorSet {
@@ -887,7 +910,9 @@ impl<'ast> BodyScanner<'_, 'ast> {
     ///   the name is qualified by the builder's type, such as `QueryAs::fetch_all`. The earlier
     ///   method calls of its chain are alternative spellings, so `find(..).with_options(..)` is
     ///   spelled `with_options` and `find`. A call at the chain's root, such as
-    ///   `SpiderClient::builder(..)` in `SpiderClient::builder(..).connect()`, is not.
+    ///   `SpiderClient::builder(..)` in `SpiderClient::builder(..).connect()`, is not. A possibly
+    ///   recursive `self.name(..)` call, as [`Self::self_call_recursion`] decides, is spelled
+    ///   `Self::name` instead.
     /// * `block_on(x)` and `.block_on(x)` give the callee of `x`.
     /// * A call that passes callables is completed by [`Self::with_callable_args`].
     ///
@@ -924,15 +949,26 @@ impl<'ast> BodyScanner<'_, 'ast> {
                 if is_value_method(&method) {
                     return None;
                 }
-                let mut spellings = Spellings::new(self.method_path(method_call));
-                for chain_method in chain_methods(&method_call.receiver) {
-                    spellings.push(chain_method);
-                }
+                let recursion = if method == self.fn_item.name
+                    && is_ident_path(peel_parens(&method_call.receiver), "self")
+                {
+                    self.self_call_recursion(None)
+                } else {
+                    Recursion::No
+                };
+                let spellings = if recursion == Recursion::Possible {
+                    Spellings::new(SymbolPath::parse(&format!("Self::{method}"))?)
+                } else {
+                    let mut spellings = Spellings::new(self.method_path(method_call));
+                    for chain_method in chain_methods(&method_call.receiver) {
+                        spellings.push(chain_method);
+                    }
+                    spellings
+                };
                 let callee = Callee {
                     spellings,
                     position: span::start_position(method_call.method.span()),
-                    is_recursive: method == self.fn_item.name
-                        && is_ident_path(peel_parens(&method_call.receiver), "self"),
+                    recursion,
                     closure_error_set: ErrorSet::default(),
                 };
                 Some(self.with_callable_args(callee, &method_call.args))
@@ -1236,8 +1272,9 @@ impl<'ast> BodyScanner<'_, 'ast> {
     ///
     /// * `Ok`, `Some` and `Err` aren't callees.
     /// * A `let` closure binding gives the callee of the closure body's tail, if it has one.
-    /// * A call of the scanned fn's own name is recursive in two cases. The path is unqualified and
-    ///   the scanned fn is a free fn, or the path's qualifier is a name of `Self`.
+    /// * A call of the scanned fn's own name is recursive if the path is unqualified and the
+    ///   scanned fn is a free fn. If the path's qualifier is a name of `Self`,
+    ///   [`Self::self_call_recursion`] decides.
     ///
     /// # Returns
     ///
@@ -1253,18 +1290,59 @@ impl<'ast> BodyScanner<'_, 'ast> {
             return closure_binding.tail_callee.clone();
         }
         let last_segment = path.segments.last()?;
-        let is_recursive = symbol_path.last() == self.fn_item.name
-            && symbol_path
-                .qualifier()
-                .map_or(!self.fn_item.is_associated, |qualifier| {
-                    self.fn_item.scope.is_self_name(qualifier)
-                });
+        let recursion = if symbol_path.last() == self.fn_item.name {
+            match symbol_path.qualifier() {
+                None if !self.fn_item.is_associated => Recursion::Certain,
+                Some(qualifier) if self.fn_item.scope.is_self_name(qualifier) => {
+                    self.self_call_recursion(Some(qualifier))
+                }
+                _ => Recursion::No,
+            }
+        } else {
+            Recursion::No
+        };
         Some(Callee {
             spellings: Spellings::new(symbol_path),
             position: span::start_position(last_segment.ident.span()),
-            is_recursive,
+            recursion,
             closure_error_set: ErrorSet::default(),
         })
+    }
+
+    /// Decides how certainly a call of the scanned fn's name through `qualifier`, a name of `Self`,
+    /// calls the fn. A [`None`] qualifier is a call through `self.`, as in `self.name(..)`.
+    ///
+    /// In a trait impl, a call through `Self`, the self type or `self.` calls the type's inherent
+    /// fn of the name if there is one:
+    ///
+    /// * If an inherent impl of the file has it, the call isn't recursive.
+    /// * Otherwise another file may have it, so the call is possibly recursive.
+    ///
+    /// Any other call, such as one through the trait's name or one outside a trait impl, is
+    /// recursive.
+    ///
+    /// # Returns
+    ///
+    /// The call's recursion.
+    fn self_call_recursion(&self, qualifier: Option<&str>) -> Recursion {
+        let Some(self_type) = self
+            .fn_item
+            .trait_impl_self_type
+            .as_deref()
+            .filter(|self_type| {
+                qualifier.is_none_or(|qualifier| qualifier == "Self" || qualifier == *self_type)
+            })
+        else {
+            return Recursion::Certain;
+        };
+        if self
+            .file_index
+            .has_inherent_fn(self_type, &self.fn_item.name)
+        {
+            Recursion::No
+        } else {
+            Recursion::Possible
+        }
     }
 
     /// Classifies an error expression, after peeling parentheses, `.await`, `.into()`,
@@ -3358,5 +3436,62 @@ mod tests {
         assert!(facts.has_opaque_source);
         let facts = facts_of(&subject("tracing::info!(id = ?id, %name, \"x\");\nOk(())"));
         assert!(!facts.has_opaque_source);
+    }
+
+    #[test]
+    fn same_name_self_calls_in_trait_impls_depend_on_the_inherent_fns_of_the_file() {
+        let trait_impl_text = concat!(
+            "impl Trait for S {\n",
+            "    fn subject(&self) -> Result<(), Error> {\n",
+            "        Self::subject(self)?;\n",
+            "        S::subject(self)?;\n",
+            "        self.subject()?;\n",
+            "        Trait::subject(self)?;\n",
+            "        <Self as Trait>::subject(self)?;\n",
+            "        Ok(())\n",
+            "    }\n",
+            "}\n",
+        );
+        let trait_impl = |inherent: &str| format!("{inherent}{trait_impl_text}");
+        let nested_callees_of = |source_text: &str| {
+            let mut nested_callees: Vec<String> = facts_of(source_text)
+                .nested_callees
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            nested_callees.sort();
+            nested_callees
+        };
+        for inherent in ["", "impl Other { fn subject(&self) {} }\n"] {
+            assert_eq!(obligations_of(&trait_impl(inherent)), Vec::<String>::new());
+            assert_eq!(
+                nested_callees_of(&trait_impl(inherent)),
+                ["S::subject", "Self::subject"]
+            );
+        }
+        assert_eq!(
+            obligations_of(&trait_impl("impl S { fn subject(&self) {} }\n")),
+            [
+                "forward Self::subject",
+                "forward S::subject",
+                "forward subject"
+            ]
+        );
+        assert_eq!(
+            obligations_of(&trait_impl("impl Other for S { fn subject(&self) {} }\n")),
+            Vec::<String>::new()
+        );
+
+        let blanket_impl = concat!(
+            "impl<T: Inner> Trait for T {\n",
+            "    fn subject(&self) -> Result<(), Error> {\n",
+            "        Self::subject(self)?;\n",
+            "        self.subject()?;\n",
+            "        Ok(())\n",
+            "    }\n",
+            "}\n",
+        );
+        assert_eq!(obligations_of(blanket_impl), Vec::<String>::new());
+        assert_eq!(nested_callees_of(blanket_impl), Vec::<String>::new());
     }
 }
