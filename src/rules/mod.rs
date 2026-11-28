@@ -13,3 +13,4 @@ pub use registry::InvalidRuleSelector;
 pub use registry::Rule;
 pub use registry::RuleId;
 pub use registry::RuleSelector;
+pub use registry::TestCodeMode;

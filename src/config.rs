@@ -40,7 +40,18 @@ pub struct CargoConfig {
 pub struct CheckConfig {
     pub rule_set: RuleSet,
     pub width: Width,
-    pub skip_tests: bool,
+
+    /// The rules that skip `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules.
+    pub test_skipping_rules: RuleSet,
+}
+
+impl CheckConfig {
+    /// # Returns
+    ///
+    /// Whether the rule `rule_id` skips test code.
+    pub fn skips_tests(&self, rule_id: RuleId) -> bool {
+        self.test_skipping_rules.contains(rule_id)
+    }
 }
 
 /// The workspace members a `cargo yscope-linter` run lints, selected as cargo selects them.
@@ -56,7 +67,8 @@ pub enum PackageSelection {
     Workspace { excluded_names: Vec<String> },
 }
 
-/// The rules enabled in a run. A deprecated rule is never enabled.
+/// A set of rules, such as the rules enabled in a run. It never holds a deprecated rule, since a
+/// deprecated rule never runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleSet {
     rule_ids: HashSet<RuleId>,
@@ -72,7 +84,7 @@ impl RuleSet {
 
     /// # Returns
     ///
-    /// Whether `rule_id` is enabled.
+    /// Whether `rule_id` is in the set.
     pub fn contains(&self, rule_id: RuleId) -> bool {
         self.rule_ids.contains(&rule_id)
     }

@@ -74,12 +74,42 @@ impl RuleId {
             | Self::TypeParamsDoc => false,
         }
     }
+
+    /// # Returns
+    ///
+    /// How the rule treats `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules.
+    pub const fn test_code_mode(self) -> TestCodeMode {
+        match self {
+            Self::CommentGreedyWrap => TestCodeMode::Unsupported,
+            Self::ErrorsDoc | Self::SymbolOrder | Self::TraitParamsDoc | Self::TypeParamsDoc => {
+                TestCodeMode::CheckedByDefault
+            }
+        }
+    }
 }
 
 impl fmt::Display for RuleId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.name())
     }
+}
+
+/// How a rule treats `#[test]` fns, `#[cfg(test)]` items and out-of-line test modules.
+#[derive(Debug)]
+pub enum TestCodeMode {
+    /// The rule has no notion of test code: it checks test code like any other, and a `skip-tests`
+    /// setting doesn't change it.
+    Unsupported,
+
+    /// The rule checks test code unless a `skip-tests` setting skips it.
+    CheckedByDefault,
+
+    /// The rule skips test code unless a `skip-tests` setting checks it.
+    #[expect(
+        dead_code,
+        reason = "no rule skips test code by default yet, but every `match` already handles one"
+    )]
+    SkippedByDefault,
 }
 
 /// A set of diagnostic codes, named by the prefix its codes share.
@@ -156,6 +186,27 @@ impl RuleSelector {
             }
         }
         deprecated_rule_ids
+    }
+
+    /// # Returns
+    ///
+    /// The rules without a test-code mode that `selectors` name by their names or codes, each once,
+    /// in the order they are first named. A set doesn't name them.
+    pub fn named_rule_ids_without_test_code_mode(selectors: &[Self]) -> Vec<RuleId> {
+        let mut rule_ids: Vec<RuleId> = Vec::new();
+        for selector in selectors {
+            let Self::Rule(rule_id) = *selector else {
+                continue;
+            };
+            let has_test_code_mode = match rule_id.test_code_mode() {
+                TestCodeMode::Unsupported => false,
+                TestCodeMode::CheckedByDefault | TestCodeMode::SkippedByDefault => true,
+            };
+            if !has_test_code_mode && !rule_ids.contains(&rule_id) {
+                rule_ids.push(rule_id);
+            }
+        }
+        rule_ids
     }
 
     /// # Returns
@@ -273,21 +324,18 @@ impl Rule {
     /// # Returns
     ///
     /// The rule `rule_id`, with the settings of `check_config`.
-    pub const fn new(rule_id: RuleId, check_config: &CheckConfig) -> Self {
+    pub fn new(rule_id: RuleId, check_config: &CheckConfig) -> Self {
+        let skip_tests = check_config.skips_tests(rule_id);
         match rule_id {
             RuleId::CommentGreedyWrap => {
                 Self::CommentGreedyWrap(greedy_wrap::Checker::new(check_config.width))
             }
-            RuleId::ErrorsDoc => Self::ErrorsDoc(errors_doc::Checker::new(check_config.skip_tests)),
-            RuleId::SymbolOrder => {
-                Self::SymbolOrder(symbol_order::Checker::new(check_config.skip_tests))
-            }
+            RuleId::ErrorsDoc => Self::ErrorsDoc(errors_doc::Checker::new(skip_tests)),
+            RuleId::SymbolOrder => Self::SymbolOrder(symbol_order::Checker::new(skip_tests)),
             RuleId::TraitParamsDoc => {
-                Self::TraitParamsDoc(trait_params_doc::Checker::new(check_config.skip_tests))
+                Self::TraitParamsDoc(trait_params_doc::Checker::new(skip_tests))
             }
-            RuleId::TypeParamsDoc => {
-                Self::TypeParamsDoc(type_params_doc::Checker::new(check_config.skip_tests))
-            }
+            RuleId::TypeParamsDoc => Self::TypeParamsDoc(type_params_doc::Checker::new(skip_tests)),
         }
     }
 
@@ -339,6 +387,24 @@ mod tests {
             ])
         );
         assert_eq!(selected("ORG"), Ok(vec![RuleId::SymbolOrder]));
+    }
+
+    #[test]
+    fn rules_without_a_test_code_mode_are_named_only_by_their_names_and_codes() {
+        let selectors = [
+            RuleSelector::Set(CodeSet::Doc),
+            RuleSelector::Rule(RuleId::ErrorsDoc),
+            RuleSelector::Rule(RuleId::CommentGreedyWrap),
+            RuleSelector::Rule(RuleId::CommentGreedyWrap),
+        ];
+        assert_eq!(
+            RuleSelector::named_rule_ids_without_test_code_mode(&selectors),
+            [RuleId::CommentGreedyWrap]
+        );
+        assert_eq!(
+            RuleSelector::named_rule_ids_without_test_code_mode(&selectors[..2]),
+            []
+        );
     }
 
     #[test]

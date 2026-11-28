@@ -51,16 +51,17 @@ This installs two binaries:
 yscope-linter [OPTIONS] [TARGET]...
 ```
 
-| Argument             | Meaning                                                                                  |
-| -------------------- | ---------------------------------------------------------------------------------------- |
-| `TARGET`             | A file, a directory, or `FILE:RANGES` (for example `src/a.rs:10-20,30,40-45`).           |
-| `--rule <ID>`        | Enable only this rule, code (`DOC003`) or set (`DOC`). Repeatable. Default: every rule.  |
-| `--width <N>`        | The fill width for `comment-greedy-wrap`. Default: 100.                                  |
-| `--skip-tests`       | Skip test code in every rule but `comment-greedy-wrap`. Default: test code is checked.   |
-| `--no-skip-tests`    | Check test code, overriding a `skip-tests` setting.                                      |
-| `--exclude <PATH>`   | Skip this file or directory, matched as a path prefix by whole components. Repeatable.   |
-| `--diff <FILE>`      | Lint only the lines changed by a unified diff. `-` reads the diff from stdin.            |
-| `--format <FORMAT>`  | `text` (default) or `github` (GitHub Actions `::error` workflow commands).               |
+| Argument                 | Meaning                                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------------------- |
+| `TARGET`                 | A file, a directory, or `FILE:RANGES` (for example `src/a.rs:10-20,30,40-45`).           |
+| `--rule <ID>`            | Enable only this rule, code (`DOC003`) or set (`DOC`). Repeatable. Default: every rule.  |
+| `--width <N>`            | The fill width for `comment-greedy-wrap`. Default: 100.                                  |
+| `--skip-tests`           | Skip test code in every rule. Default: each rule's own, and every rule checks test code. |
+| `--skip-tests=<ID>,...`  | Skip test code in the listed rules, codes or sets only. The others keep their defaults.  |
+| `--no-skip-tests`        | Check test code in every rule, overriding a `skip-tests` setting.                        |
+| `--exclude <PATH>`       | Skip this file or directory, matched as a path prefix by whole components. Repeatable.   |
+| `--diff <FILE>`          | Lint only the lines changed by a unified diff. `-` reads the diff from stdin.            |
+| `--format <FORMAT>`      | `text` (default) or `github` (GitHub Actions `::error` workflow commands).               |
 
 * Directories are walked recursively for `.rs` files, skipping `target/` and hidden directories.
 * A file named explicitly is always checked.
@@ -73,7 +74,14 @@ yscope-linter [OPTIONS] [TARGET]...
 * Test code is a fn with an attribute whose last path segment is `test`, such as `#[test]` or
   `#[tokio::test]`, an item marked `#[cfg(test)]` with everything inside it, and a module file whose
   parent declares it with `#[cfg(test)] mod tests;`.
-* Of `--skip-tests` and `--no-skip-tests`, the last one given wins.
+* `comment-greedy-wrap` checks every comment and has no notion of test code, so skipping test code
+  doesn't change it. Naming it by its name or code in a `--skip-tests` list has no effect and prints
+  a warning on stderr. A set such as `DOC` doesn't name it.
+* The list of `--skip-tests` is comma-separated and takes what `--rule` takes, including the warning
+  for a deprecated rule. It must follow `=`: `--skip-tests ORG001` skips test code in every rule and
+  lints a `TARGET` named `ORG001`.
+* Of `--skip-tests`, `--skip-tests=<ID>,...` and `--no-skip-tests`, the last one given wins. A later
+  list replaces an earlier one.
 * `--include-tests` is deprecated and has no effect, since test code is checked by default. It
   prints a warning on stderr.
 
@@ -165,7 +173,7 @@ A workspace and each package can set defaults for the options in their `Cargo.to
 ```toml
 [workspace.metadata.yscope-linter]
 width = 100
-skip-tests = true
+skip-tests = ["symbol-order"]
 exclude = ["components/proto/src/generated"]
 rules = ["DOC", "symbol-order"]
 
@@ -173,22 +181,27 @@ rules = ["DOC", "symbol-order"]
 width = 80
 ```
 
-| Key             | Type              | Meaning                                                                                |
-| --------------- | ----------------- | -------------------------------------------------------------------------------------- |
-| `width`         | positive integer  | As `--width`.                                                                          |
-| `skip-tests`    | boolean           | As `--skip-tests` if `true`, and as `--no-skip-tests` if `false`.                      |
-| `exclude`       | array of paths    | As `--exclude`, with paths relative to the directory of the `Cargo.toml` that sets it. |
-| `rules`         | array of rule IDs | As `--rule`: names, codes or sets. An empty array enables no rule.                     |
+| Key           | Type                         | Meaning                                                                                                   |
+| ------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `width`       | positive integer             | As `--width`.                                                                                             |
+| `skip-tests`  | boolean or array of rule IDs | As `--skip-tests` if `true`, as `--no-skip-tests` if `false`, and as `--skip-tests=<ID>,...` if an array. |
+| `exclude`     | array of paths               | As `--exclude`, with paths relative to the directory of the `Cargo.toml` that sets it.                    |
+| `rules`       | array of rule IDs            | As `--rule`: names, codes or sets. An empty array enables no rule.                                        |
 
 * The `[workspace.metadata.yscope-linter]` table is read from the workspace root's `Cargo.toml`. A
   package's `[package.metadata.yscope-linter]` table applies to that package's files only.
 * Each option comes from the first of the command line, the package's table and the workspace's
   table that sets it, and else from the default. `--skip-tests` and `--no-skip-tests` set
   `skip-tests` either way, so the command line overrides a table in both directions.
+* A `skip-tests` or `rules` array replaces the value it overrides instead of adding to it. A package
+  that skips test code in one more rule than the workspace repeats the workspace's list. Without any
+  `skip-tests`, each rule uses its own default, and an empty array does the same.
 * Excludes add up: the command line's, the package's and the workspace's all apply.
-* An unknown key, a value of the wrong type, and an unknown rule are errors that name the table and
-  its `Cargo.toml`. The other keys of `[workspace.metadata]` and `[package.metadata]` belong to
-  other tools and are ignored.
+* An unknown key, a value of the wrong type, and an unknown rule in `rules` or `skip-tests` are
+  errors that name the table and its `Cargo.toml`. A deprecated rule in either is ignored with a
+  warning on stderr, and so is `comment-greedy-wrap` when `skip-tests` names it by its name or code.
+  The other keys of `[workspace.metadata]` and `[package.metadata]` belong to other tools and are
+  ignored.
 
 ### Errors
 
